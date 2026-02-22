@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 from fastmcp.exceptions import ToolError
 
+from clawstrike.classifier import ClassifierResult
 from clawstrike.config import ClawStrikeConfig, load_config
 
 # ---------------------------------------------------------------------------
@@ -41,11 +43,23 @@ def cfg(tmp_path: Path) -> ClawStrikeConfig:
 
 @pytest.fixture(autouse=True)
 def reset_server_config():
-    """Reset the module-level _config after each test for isolation."""
+    """Reset module globals and mock create_classifier for each test.
+
+    Patching create_classifier prevents any attempt to download real HF models.
+    The mock classifier returns a fixed benign ClassifierResult.
+    """
     import clawstrike.mcpserver as srv
 
-    yield
+    mock_clf = MagicMock()
+    mock_clf.classify.return_value = ClassifierResult(
+        score=0.0, label="benign", model="mock-model", latency_ms=1.0
+    )
+
+    with patch("clawstrike.mcpserver.create_classifier", return_value=mock_clf):
+        yield
+
     srv._config = None
+    srv._classifier = None
 
 
 # ---------------------------------------------------------------------------

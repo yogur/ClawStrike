@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 from typer.testing import CliRunner
 
+from clawstrike.classifier import ClassifierResult
 from clawstrike.cli import app
 
 runner = CliRunner()
@@ -70,10 +71,23 @@ def test_start_proxy_mode_exits_1(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _mock_classifier() -> MagicMock:
+    clf = MagicMock()
+    clf.classify.return_value = ClassifierResult(
+        score=0.0, label="benign", model="mock-model", latency_ms=1.0
+    )
+    return clf
+
+
 def test_start_skill_mode_logs_banner_and_runs(tmp_path: Path) -> None:
     cfg_file = write_yaml(tmp_path, minimal_config())
 
-    with patch("clawstrike.mcpserver.mcp.run") as mock_run:
+    with (
+        patch("clawstrike.mcpserver.mcp.run") as mock_run,
+        patch(
+            "clawstrike.mcpserver.create_classifier", return_value=_mock_classifier()
+        ),
+    ):
         result = runner.invoke(app, ["start", "--config", str(cfg_file)])
 
     assert result.exit_code == 0
@@ -86,11 +100,37 @@ def test_start_skill_mode_logs_banner_and_runs(tmp_path: Path) -> None:
 def test_start_banner_includes_classifier_model(tmp_path: Path, model: str) -> None:
     cfg_file = write_yaml(tmp_path, minimal_config({"classifier": {"model": model}}))
 
-    with patch("clawstrike.mcpserver.mcp.run"):
+    with (
+        patch("clawstrike.mcpserver.mcp.run"),
+        patch(
+            "clawstrike.mcpserver.create_classifier", return_value=_mock_classifier()
+        ),
+    ):
         result = runner.invoke(app, ["start", "--config", str(cfg_file)])
 
     assert result.exit_code == 0
     assert model in result.output
+
+
+# ---------------------------------------------------------------------------
+# AC: classifier load failure → exit 1 with descriptive error
+# ---------------------------------------------------------------------------
+
+
+def test_start_classifier_load_failure_exits_1(tmp_path: Path) -> None:
+    cfg_file = write_yaml(tmp_path, minimal_config())
+
+    with (
+        patch("clawstrike.mcpserver.mcp.run"),
+        patch(
+            "clawstrike.mcpserver.create_classifier",
+            side_effect=RuntimeError("Failed to load classifier 'x': no such file"),
+        ),
+    ):
+        result = runner.invoke(app, ["start", "--config", str(cfg_file)])
+
+    assert result.exit_code == 1
+    assert "Failed to load classifier" in result.output
 
 
 # ---------------------------------------------------------------------------

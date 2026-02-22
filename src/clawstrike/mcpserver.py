@@ -8,6 +8,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from clawstrike.classifier import BaseClassifier, ClassifierResult, create_classifier
 from clawstrike.config import ClawStrikeConfig
 
 # ---------------------------------------------------------------------------
@@ -28,6 +29,7 @@ mcp = FastMCP(
 )
 
 _config: ClawStrikeConfig | None = None
+_classifier: BaseClassifier | None = None
 
 
 def init_server(cfg: ClawStrikeConfig) -> None:
@@ -38,7 +40,8 @@ def init_server(cfg: ClawStrikeConfig) -> None:
     For ``fastmcp run``, set the CLAWSTRIKE_CONFIG env var to the path of
     your clawstrike.yaml and the module will auto-initialize on import.
     """
-    global _config
+    global _config, _classifier
+    _classifier = create_classifier(cfg.classifier.model)
     _config = cfg
 
 
@@ -50,6 +53,16 @@ def _require_config() -> ClawStrikeConfig:
             "or set the CLAWSTRIKE_CONFIG environment variable."
         )
     return _config
+
+
+def _require_classifier() -> BaseClassifier:
+    if _classifier is None:
+        raise RuntimeError(
+            "ClawStrike server is not configured. "
+            "Call init_server(cfg) before making tool calls, "
+            "or set the CLAWSTRIKE_CONFIG environment variable."
+        )
+    return _classifier
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +101,22 @@ async def classify(
         label (benign|injection|jailbreak), model, latency_ms.
     """
     cfg = _require_config()
-    # Stub implementation — full classifier inference ships in US-005 / US-006.
+    clf = _require_classifier()
+    result: ClassifierResult = clf.classify(text)
+    block_t = cfg.classifier.threshold.block
+    flag_t = cfg.classifier.threshold.flag
+    if result.score >= block_t:
+        decision = "block"
+    elif result.score >= flag_t:
+        decision = "flag"
+    else:
+        decision = "pass"
     return {
-        "decision": "pass",
-        "score": 0.0,
-        "label": "benign",
-        "model": cfg.classifier.model.value,
-        "latency_ms": 0.0,
+        "decision": decision,
+        "score": result.score,
+        "label": result.label,
+        "model": result.model,
+        "latency_ms": result.latency_ms,
         "source_id": source_id,
         "channel_type": channel_type,
     }

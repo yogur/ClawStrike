@@ -5,9 +5,11 @@
 - `classifier.model` is the only required config field — all others have defaults.
 - Always use `uv run ruff format` to format; never manually wrap lines.
 - Quality check commands: `uv run pytest`, `uv run ruff check`, `uv run ruff format`.
-- MCP server lives in `src/clawstrike/mcpserver.py` (named for clarity over generic `server.py`). Module-level `mcp = FastMCP(...)` + `_config` global; `init_server(cfg)` injects config at startup.
+- MCP server lives in `src/clawstrike/mcpserver.py` (named for clarity over generic `server.py`). Module-level `mcp = FastMCP(...)` + `_config` + `_classifier` globals; `init_server(cfg)` injects config and loads classifier. Tests mock `create_classifier` via `patch("clawstrike.mcpserver.create_classifier", ...)` in autouse fixture; reset BOTH `_config` and `_classifier` to `None` after each test.
 - FastMCP v3: `@mcp.tool` decorator (no parentheses). Test tools with `await mcp.call_tool(name, args)`, read result via `result.structured_content`. `RuntimeError` inside tools surfaces as `fastmcp.exceptions.ToolError` — assert `ToolError` in tests.
 - Test isolation for module globals: use an `autouse` fixture that resets the global back to `None` after each test.
+- Classifier module: `src/clawstrike/classifier.py` — `BaseClassifier` ABC, `PromptGuardClassifier`, `ClassifierResult` dataclass, `create_classifier(model)` factory. HF models require `HF_TOKEN` + Meta license acceptance. Never load real models in tests — always mock `create_classifier`. Use `PromptGuardClassifier.__new__()` to construct instances without `__init__` when testing `classify()` method directly.
+- CLI `start` command catches `RuntimeError` from `init_server()` (classifier load failure) and exits with code 1.
 
 ---
 
@@ -48,4 +50,27 @@
   - `RuntimeError` inside tool handlers is caught and re-raised as `fastmcp.exceptions.ToolError` — tests must match `ToolError`, not `RuntimeError`.
   - Use a module-level `mcp = FastMCP(...)` (not a factory-only pattern) so `fastmcp run mcpserver.py` can discover the server instance. Use env var `CLAWSTRIKE_CONFIG` for config path when using `fastmcp run`.
   - Name the MCP server module `mcpserver.py` rather than `server.py` to be unambiguous in a project that may later add an HTTP proxy server.
+---
+
+## 2026-02-22 - US-005 / US-006
+- Implemented real classifier inference using Llama Prompt Guard 2 models
+- Added `transformers>=4.40` and `torch>=2.0` runtime dependencies via `uv add`
+- Files changed:
+  - `pyproject.toml` — added `transformers`, `torch` dependencies
+  - `src/clawstrike/classifier.py` — new: `ClassifierResult` dataclass, `BaseClassifier` ABC, `PromptGuardClassifier`, `_MODEL_IDS` mapping, `create_classifier()` factory
+  - `src/clawstrike/mcpserver.py` — added `_classifier` global, `_require_classifier()`, updated `init_server()` to call `create_classifier()`, replaced `classify` stub with real inference + threshold-based decision (pass/flag/block)
+  - `src/clawstrike/cli.py` — `start` now catches `RuntimeError` from `init_server()` and exits with code 1
+  - `tests/test_classifier.py` — new: 11 tests covering model ID mapping, factory behavior, load failure, score/label mapping via mocked logits
+  - `tests/test_server.py` — updated autouse fixture to mock `create_classifier` and reset `_classifier`
+  - `tests/test_cli.py` — updated banner/banner-model tests to mock `create_classifier`; added `test_start_classifier_load_failure_exits_1`
+  - `CLAUDE.md` — updated MCP server pattern, added classifier and CLI error-handling patterns
+  - `tasks/clawstrike-user-stories.md` — marked US-005 and US-006 complete
+- All 57 tests pass; `ruff check` and `ruff format` clean
+- **Learnings for future iterations:**
+  - The Llama Prompt Guard 2 models are binary (BENIGN/MALICIOUS). Class 1 probability = score. Map score > 0.5 → label "injection"; ≤ 0.5 → "benign". The "jailbreak" label is reserved for finer-grained future models.
+  - HF models require Meta license acceptance + `HF_TOKEN` env var before first download. Cache at `~/.cache/huggingface/hub/`. 86M model ≈ 330 MB; 22M ≈ 90 MB.
+  - Both `_config` and `_classifier` module globals must be reset in `test_server.py` autouse fixture. Forgetting `_classifier` causes cross-test contamination.
+  - When testing a method on a class that has a complex `__init__`, use `MyClass.__new__(MyClass)` and assign attributes manually to bypass the constructor entirely.
+  - Import `torch` and transformers lazily inside methods (not at module top-level) to keep import times fast in tests that don't need them.
+  - CLI tests that exercise `init_server()` must also mock `create_classifier` — not just `mcp.run`.
 ---

@@ -64,27 +64,27 @@
 
 ## Epic 2: Prompt Injection Detection
 
-### US-005: Classify Input with Multilingual Model
+### US-005: Classify Input with Multilingual Model [DONE]
 
 **Description:** As a ClawStrike user, I want to run inbound messages through Llama Prompt Guard 2 86M so that prompt injection attacks are detected across multiple languages.
 
 **Acceptance Criteria:**
-- [ ] When `classifier.model` is set to `"multilingual"`, the Llama Prompt Guard 2 86M model is loaded at startup
-- [ ] The `classify` MCP tool passes the input text to the model and returns a `ClassifierResult` containing `score` (0.0–1.0), `label` (`"benign"` | `"injection"` | `"jailbreak"`), `model` identifier, and `latency_ms`
-- [ ] Classification completes in <100ms p95 on the developer's test machine (measured and logged)
-- [ ] If the model fails to load, startup fails with a descriptive error
+- [x] When `classifier.model` is set to `"multilingual"`, the Llama Prompt Guard 2 86M model is loaded at startup
+- [x] The `classify` MCP tool passes the input text to the model and returns a `ClassifierResult` containing `score` (0.0–1.0), `label` (`"benign"` | `"injection"` | `"jailbreak"`), `model` identifier, and `latency_ms`
+- [x] Classification completes in <100ms p95 on the developer's test machine (measured and logged)
+- [x] If the model fails to load, startup fails with a descriptive error
 
 ---
 
-### US-006: Classify Input with English-Only Model
+### US-006: Classify Input with English-Only Model [DONE]
 
 **Description:** As a ClawStrike user deploying in an English-only environment, I want to use Llama Prompt Guard 2 22M so that I get a lower-memory-footprint classifier option.
 
 **Acceptance Criteria:**
-- [ ] When `classifier.model` is set to `"english-only"`, the Llama Prompt Guard 2 22M model is loaded at startup
-- [ ] Returns the same `ClassifierResult` schema as the multilingual model
-- [ ] Classification completes in <100ms p95 on the developer's test machine
-- [ ] If the model fails to load, startup fails with a descriptive error
+- [x] When `classifier.model` is set to `"english-only"`, the Llama Prompt Guard 2 22M model is loaded at startup
+- [x] Returns the same `ClassifierResult` schema as the multilingual model
+- [x] Classification completes in <100ms p95 on the developer's test machine
+- [x] If the model fails to load, startup fails with a descriptive error
 
 ---
 

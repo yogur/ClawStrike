@@ -58,7 +58,11 @@ def start(
     # Import and configure the module-level MCP server.
     from clawstrike.mcpserver import init_server, mcp
 
-    init_server(cfg)
+    try:
+        init_server(cfg)
+    except RuntimeError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
     print(
         "ClawStrike MCP server started "

@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from clawstrike.config import (
+    ClassifierModel,
     ClawStrikeConfig,
     ClawStrikeMode,
     LlmJudgeTrigger,
@@ -31,7 +32,7 @@ def write_yaml(tmp_path: Path, data: dict) -> Path:
 
 def minimal_config(extra: dict | None = None) -> dict:
     """Return the minimum valid config dict (only required fields)."""
-    base: dict = {"clawstrike": {"classifier": {"model": "prompt-guard-2"}}}
+    base: dict = {"clawstrike": {"classifier": {"model": "multilingual"}}}
     if extra:
         base["clawstrike"].update(extra)
     return base
@@ -120,7 +121,7 @@ def test_unknown_classifier_key_warns(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
     data: dict = {
-        "clawstrike": {"classifier": {"model": "prompt-guard-2", "future_field": "xyz"}}
+        "clawstrike": {"classifier": {"model": "multilingual", "future_field": "xyz"}}
     }
     cfg_file = write_yaml(tmp_path, data)
 
@@ -143,7 +144,6 @@ def test_defaults_classifier(tmp_path: Path) -> None:
     assert config.classifier.run_mode == RunMode.LOCAL
     assert config.classifier.threshold.block == pytest.approx(0.92)
     assert config.classifier.threshold.flag == pytest.approx(0.70)
-    assert config.classifier.custom_model_path is None
 
 
 def test_defaults_mode_and_mcp(tmp_path: Path) -> None:
@@ -227,7 +227,7 @@ def test_invalid_classifier_model_enum(tmp_path: Path) -> None:
     assert "classifier" in error_msg
     assert "model" in error_msg
     # Pydantic v2 lists valid enum options in the message
-    assert "prompt-guard-2" in error_msg or "deberta-v3" in error_msg
+    assert "multilingual" in error_msg or "english-only" in error_msg
 
 
 def test_invalid_mode_enum(tmp_path: Path) -> None:
@@ -317,11 +317,14 @@ def test_llm_judge_invalid_trigger_caught_when_disabled(tmp_path: Path) -> None:
 
 
 def test_all_classifier_model_values_accepted(tmp_path: Path) -> None:
-    for model_value in ("prompt-guard-2", "deberta-v3", "custom"):
+    for model_value, expected in (
+        ("multilingual", ClassifierModel.MULTILINGUAL),
+        ("english-only", ClassifierModel.ENGLISH_ONLY),
+    ):
         data = {"clawstrike": {"classifier": {"model": model_value}}}
         cfg_file = write_yaml(tmp_path, data)
         config = load_config(cfg_file)
-        assert config.classifier.model.value == model_value
+        assert config.classifier.model == expected
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +336,7 @@ def test_custom_thresholds_override_defaults(tmp_path: Path) -> None:
     data: dict = {
         "clawstrike": {
             "classifier": {
-                "model": "deberta-v3",
+                "model": "english-only",
                 "threshold": {"block": 0.85, "flag": 0.60},
             }
         }

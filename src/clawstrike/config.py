@@ -26,9 +26,8 @@ class TransportMode(StrEnum):
 
 
 class ClassifierModel(StrEnum):
-    PROMPT_GUARD_2 = "prompt-guard-2"
-    DEBERTA_V3 = "deberta-v3"
-    CUSTOM = "custom"
+    MULTILINGUAL = "multilingual"  # Llama Prompt Guard 2 86M
+    ENGLISH_ONLY = "english-only"  # Llama Prompt Guard 2 22M
 
 
 class RunMode(StrEnum):
@@ -67,7 +66,6 @@ class ClassifierConfig(BaseModel):
 
     # Required — no default. Startup fails if omitted.
     model: ClassifierModel
-    custom_model_path: Path | None = None
     run_mode: RunMode = RunMode.LOCAL
     threshold: ThresholdConfig = Field(default_factory=ThresholdConfig)
 

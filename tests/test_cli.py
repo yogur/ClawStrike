@@ -25,7 +25,7 @@ def write_yaml(tmp_path: Path, data: dict) -> Path:
 
 
 def minimal_config(extra: dict | None = None) -> dict:
-    base: dict = {"clawstrike": {"classifier": {"model": "prompt-guard-2"}}}
+    base: dict = {"clawstrike": {"classifier": {"model": "multilingual"}}}
     if extra:
         base["clawstrike"].update(extra)
     return base
@@ -82,7 +82,7 @@ def test_start_skill_mode_logs_banner_and_runs(tmp_path: Path) -> None:
     mock_run.assert_called_once_with(transport="stdio")
 
 
-@pytest.mark.parametrize("model", ["prompt-guard-2", "deberta-v3"])
+@pytest.mark.parametrize("model", ["multilingual", "english-only"])
 def test_start_banner_includes_classifier_model(tmp_path: Path, model: str) -> None:
     cfg_file = write_yaml(tmp_path, minimal_config({"classifier": {"model": model}}))
 

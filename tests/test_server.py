@@ -22,7 +22,7 @@ def write_yaml(tmp_path: Path, data: dict) -> Path:
 
 
 def minimal_config(extra: dict | None = None) -> dict:
-    base: dict = {"clawstrike": {"classifier": {"model": "prompt-guard-2"}}}
+    base: dict = {"clawstrike": {"classifier": {"model": "multilingual"}}}
     if extra:
         base["clawstrike"].update(extra)
     return base
@@ -62,7 +62,7 @@ async def test_health_returns_ok(cfg: ClawStrikeConfig) -> None:
     data = result.structured_content
     assert data["status"] == "ok"
     assert data["mode"] == "skill"
-    assert data["classifier"] == "prompt-guard-2"
+    assert data["classifier"] == "multilingual"
 
 
 @pytest.mark.asyncio
@@ -222,7 +222,7 @@ def test_init_server_overrides_previous_config(
     srv.init_server(cfg)
 
     cfg2 = load_config(
-        write_yaml(tmp_path, minimal_config({"classifier": {"model": "deberta-v3"}}))
+        write_yaml(tmp_path, minimal_config({"classifier": {"model": "english-only"}}))
     )
     srv.init_server(cfg2)
     assert srv._config is cfg2
@@ -234,15 +234,15 @@ def test_init_server_overrides_previous_config(
 
 
 @pytest.mark.asyncio
-async def test_health_reflects_deberta_model(tmp_path: Path) -> None:
+async def test_health_reflects_english_only_model(tmp_path: Path) -> None:
     import clawstrike.mcpserver as srv
 
     cfg = load_config(
-        write_yaml(tmp_path, minimal_config({"classifier": {"model": "deberta-v3"}}))
+        write_yaml(tmp_path, minimal_config({"classifier": {"model": "english-only"}}))
     )
     srv.init_server(cfg)
     result = await srv.mcp.call_tool("health", {})
-    assert result.structured_content["classifier"] == "deberta-v3"
+    assert result.structured_content["classifier"] == "english-only"
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@
 
 ## Epic 1: Setup & Configuration
 
-### US-001: YAML Configuration Loading
+### US-001: YAML Configuration Loading [DONE]
 
 **Description:** As a ClawStrike user, I want to define all settings in a single `clawstrike.yaml` file so that I can configure the system without touching code.
 
@@ -23,7 +23,7 @@
 
 ---
 
-### US-002: Skill Mode MCP Server Startup
+### US-002: Skill Mode MCP Server Startup [DONE]
 
 **Description:** As a ClawStrike user, I want to start ClawStrike as a local MCP server so that the ClawStrike OpenClaw skill can call it for classification and gating recommendations.
 
@@ -50,7 +50,7 @@
 
 ---
 
-### US-004: Graceful Shutdown
+### US-004: Graceful Shutdown [POSTPONED]
 
 **Description:** As a ClawStrike user, I want ClawStrike to shut down cleanly so that in-flight requests complete and no data is lost.
 
@@ -64,39 +64,35 @@
 
 ## Epic 2: Prompt Injection Detection
 
-### US-005: Classify Input with Prompt Guard 2
+### US-005: Classify Input with Multilingual Model
 
-**Description:** As a ClawStrike user, I want to run inbound messages through the Llama Prompt Guard 2 model so that prompt injection attacks are detected.
+**Description:** As a ClawStrike user, I want to run inbound messages through Llama Prompt Guard 2 86M so that prompt injection attacks are detected across multiple languages.
 
 **Acceptance Criteria:**
-- [ ] When `classifier.model` is set to `"prompt-guard-2"`, the Prompt Guard 2 model is loaded at startup
+- [ ] When `classifier.model` is set to `"multilingual"`, the Llama Prompt Guard 2 86M model is loaded at startup
 - [ ] The `classify` MCP tool passes the input text to the model and returns a `ClassifierResult` containing `score` (0.0–1.0), `label` (`"benign"` | `"injection"` | `"jailbreak"`), `model` identifier, and `latency_ms`
 - [ ] Classification completes in <100ms p95 on the developer's test machine (measured and logged)
-- [ ] If the model file is missing or fails to load, startup fails with an error naming the expected model path
+- [ ] If the model fails to load, startup fails with a descriptive error
 
 ---
 
-### US-006: Classify Input with DeBERTa v3
+### US-006: Classify Input with English-Only Model
 
-**Description:** As a ClawStrike user, I want to use the protectai/deberta-v3 model as an alternative classifier so that I have a lightweight English-only option.
+**Description:** As a ClawStrike user deploying in an English-only environment, I want to use Llama Prompt Guard 2 22M so that I get a lower-memory-footprint classifier option.
 
 **Acceptance Criteria:**
-- [ ] When `classifier.model` is set to `"deberta-v3"`, the DeBERTa model is loaded at startup
-- [ ] Returns the same `ClassifierResult` schema as Prompt Guard 2
+- [ ] When `classifier.model` is set to `"english-only"`, the Llama Prompt Guard 2 22M model is loaded at startup
+- [ ] Returns the same `ClassifierResult` schema as the multilingual model
 - [ ] Classification completes in <100ms p95 on the developer's test machine
-- [ ] If the model file is missing or fails to load, startup fails with an error naming the expected model path
+- [ ] If the model fails to load, startup fails with a descriptive error
 
 ---
 
-### US-007: Custom Model Support
+### US-007: Custom Model Support *(Deferred — Phase 2)*
 
 **Description:** As an advanced user, I want to plug in my own fine-tuned classifier so that I can tailor detection to my specific threat profile.
 
-**Acceptance Criteria:**
-- [ ] When `classifier.model` is set to `"custom"`, ClawStrike loads the model from `classifier.custom_model_path`
-- [ ] The custom model must implement the `BaseClassifier` interface (accept text + metadata, return `ClassifierResult`)
-- [ ] If `custom_model_path` is null or the path does not exist, startup fails with a descriptive error
-- [ ] A working example custom classifier is provided in the repository under `examples/custom_classifier/`
+> **Status: Deferred to Phase 2.** Custom model support is out of scope for the MVP. The `BaseClassifier` interface is defined in the MVP to keep the extension point open.
 
 ---
 

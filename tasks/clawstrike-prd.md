@@ -119,20 +119,21 @@ The **MVP ships with Skill Mode only** — a lightweight, advisory integration t
 **Purpose:** Classify inbound content for prompt injection attacks before it reaches the LLM or influences agent behavior.
 
 **Model Selection:**
-ClawStrike supports pluggable classifier backends. The user selects one model via configuration. Two models are supported at launch:
+ClawStrike abstracts the underlying model behind two intent-based options. The user selects one via configuration.
 
-| Model | Params | Languages | Strengths | Best For |
+| Option | Model | Params | Languages | Best For |
 |---|---|---|---|---|
-| Llama Prompt Guard 2 (86M) | 86M | Multilingual | Fine-tunable per use case, broad language coverage | Multilingual deployments, custom fine-tuning |
-| protectai/deberta-v3-small-prompt-injection-v2 | ~44M | English | Lightweight, fast inference | English-only, latency-sensitive setups |
+| `multilingual` | Llama Prompt Guard 2 86M | 86M | Multilingual | Deployments receiving input in multiple languages |
+| `english-only` | Llama Prompt Guard 2 22M | 22M | English | English-only deployments, lower memory footprint |
+
+Custom model support is deferred to Phase 2.
 
 **Configuration:**
 
 ```yaml
 clawstrike:
   classifier:
-    model: "prompt-guard-2"  # or "deberta-v3" or "custom"
-    custom_model_path: null   # path to user-provided model
+    model: "multilingual"  # or "english-only"
     threshold:
       block: 0.92            # hard block above this score
       flag: 0.70             # flag for review / elevated scrutiny
@@ -320,7 +321,7 @@ These limitations are accepted for the MVP. The audit log captures what was repo
     "is_first_contact": true
   },
   "classifier": {
-    "model": "prompt-guard-2",
+    "model": "multilingual",
     "score": 0.87,
     "label": "injection",
     "threshold_applied": { "block": 0.82, "flag": 0.52 },
@@ -437,8 +438,7 @@ clawstrike:
     # When mode is "proxy", OpenClaw points its LLM base URL to http://localhost:8019
 
   classifier:
-    model: "prompt-guard-2"   # "prompt-guard-2" | "deberta-v3" | "custom"
-    custom_model_path: null
+    model: "multilingual"      # "multilingual" | "english-only"
     run_mode: "local"          # "local" | "api"
     threshold:
       block: 0.92
@@ -508,8 +508,8 @@ src/clawstrike/
 ├── classifier/
 │   ├── __init__.py
 │   ├── base.py                # BaseClassifier ABC, ClassifierResult model
-│   ├── prompt_guard.py        # Llama Prompt Guard 2 implementation
-│   └── deberta.py             # DeBERTa v3 implementation
+│   ├── multilingual.py        # Llama Prompt Guard 2 86M (multilingual)
+│   └── english_only.py        # Llama Prompt Guard 2 22M (english-only)
 ├── trust/
 │   ├── __init__.py
 │   ├── engine.py              # Trust resolution, threshold modulation, mismatch detection

@@ -6,13 +6,9 @@ clawstrike:
 
   classifier:
     # Required. Choose the prompt injection detection model.
-    #   "prompt-guard-2" — Llama Prompt Guard 2 (86M). Multilingual, fine-tunable.
-    #   "deberta-v3"     — protectai/deberta-v3-small (44M). English-only, faster.
-    #   "custom"         — Load your own model from custom_model_path.
-    model: "prompt-guard-2"
-
-    # Required only when model is "custom".
-    # custom_model_path: "/path/to/your/model"
+    #   "multilingual" — Llama Prompt Guard 2 86M. Supports multiple languages.
+    #   "english-only" — Llama Prompt Guard 2 22M. English only, lower memory usage.
+    model: "multilingual"
 
     run_mode: "local"  # "local" (default) runs inference on this machine.
 

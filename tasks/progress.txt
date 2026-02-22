@@ -33,23 +33,33 @@
   - `_RootConfig` wrapper model (with `clawstrike:` as the only key) is needed to validate the top-level YAML structure before extracting the inner `ClawStrikeConfig`.
 ---
 
-## 2026-02-22 - US-002
-- Implemented Skill Mode MCP server startup
-- Added `fastmcp>=3.0.1` dependency
+## [2026-02-22] - US-002
+
+- What was implemented:
+  - Added `fastmcp>=3.0.1` dependency via `uv add fastmcp`
+  - Created `src/clawstrike/server.py` with module-level `FastMCP("ClawStrike")` instance and three MCP tools:
+    - `health` → returns `{"status": "ok", "mode": "skill", "classifier": "<model>"}`
+    - `classify` → accepts `text`, `source_id`, `channel_type`; returns stub classification result (full inference in US-005/006)
+    - `gate` → accepts `action_description`, `action_type`, `session_id`, `source_id`, `channel_type`; returns stub gating recommendation (full engine in US-017/018)
+  - `init_server(cfg)` injects `ClawStrikeConfig` into the module-level `_config` global; `_require_config()` guards all tool handlers
+  - Auto-initialization via `CLAWSTRIKE_CONFIG` env var for `fastmcp run src/clawstrike/server.py`
+  - Updated `src/clawstrike/cli.py` `start` command: loads config, calls `init_server()`, logs startup banner to stderr, calls `mcp.run(transport="stdio")`
+  - Created `tests/test_server.py` with 12 tests covering all three tools, uninitialized-server error paths, config injection, and tool registration
 - Files changed:
   - `pyproject.toml` — added `fastmcp>=3.0.1`
-  - `src/clawstrike/mcpserver.py` — new: module-level `FastMCP("ClawStrike")`, `init_server()`, `health`/`classify`/`gate` tools (stubs; full inference in US-005/006, gating in US-017/018)
-  - `src/clawstrike/cli.py` — `start` command now calls `init_server()`, logs startup banner to stderr, calls `mcp.run(transport="stdio")`
-  - `tests/test_server.py` — 12 tests covering all three tools, uninitialized-server error paths, config injection, tool registration
-  - `CLAUDE.md` — added fastmcp patterns
+  - `src/clawstrike/server.py` — new file
+  - `src/clawstrike/cli.py` — updated `start` command
+  - `tests/test_server.py` — new file
+  - `CLAUDE.md` — added fastmcp patterns to Codebase Patterns
   - `tasks/clawstrike-user-stories.md` — marked US-002 complete
-- All 38 tests pass; `ruff check` and `ruff format` clean
 - **Learnings for future iterations:**
-  - FastMCP v3 (3.0.1): `@mcp.tool` (no parentheses). `mcp.run(transport="stdio")` blocks on stdio.
-  - Startup log must go to stderr — stdout is reserved for MCP protocol messages in stdio mode.
-  - `RuntimeError` inside tool handlers is caught and re-raised as `fastmcp.exceptions.ToolError` — tests must match `ToolError`, not `RuntimeError`.
-  - Use a module-level `mcp = FastMCP(...)` (not a factory-only pattern) so `fastmcp run mcpserver.py` can discover the server instance. Use env var `CLAWSTRIKE_CONFIG` for config path when using `fastmcp run`.
-  - Name the MCP server module `mcpserver.py` rather than `server.py` to be unambiguous in a project that may later add an HTTP proxy server.
+  - FastMCP v3 is already at 3.0.1; the `@mcp.tool` decorator (no parentheses) is the current API.
+  - Direct tool testing: `result = await mcp.call_tool("name", {…})` works in-process without a Client. `result.structured_content` returns the typed dict. `result.data` also available.
+  - `RuntimeError` inside a tool handler is caught and re-raised as `fastmcp.exceptions.ToolError` — tests must match `ToolError`, not `RuntimeError`.
+  - Module-level `mcp = FastMCP(...)` must exist for `fastmcp run server.py` to find the server; don't use a factory-only pattern if you want `fastmcp run` support.
+  - Test isolation for the `_config` global requires an `autouse` fixture that resets it to `None` after each test.
+  - `mcp.run(transport="stdio")` is the correct call; the `transport` kwarg is a string literal.
+  - Startup log must go to stderr (stdout is reserved for MCP protocol messages in stdio mode).
 ---
 
 ## 2026-02-22 - US-005 / US-006
@@ -73,4 +83,23 @@
   - When testing a method on a class that has a complex `__init__`, use `MyClass.__new__(MyClass)` and assign attributes manually to bypass the constructor entirely.
   - Import `torch` and transformers lazily inside methods (not at module top-level) to keep import times fast in tests that don't need them.
   - CLI tests that exercise `init_server()` must also mock `create_classifier` — not just `mcp.run`.
+---
+
+## [2026-02-22] - Classifier chunking (sliding-window fix)
+
+- What was implemented:
+  - `_MAX_TOKENS: int = 512` module-level constant in `classifier.py`
+  - `PromptGuardClassifier._classify_chunks(texts, temperature)` — batch-tokenizes a list of chunk strings and runs a single batched forward pass; returns `max(probs[:, 1])`
+  - `PromptGuardClassifier.classify()` refactored: tokenizes the full text without truncation to count tokens; if ≤ 512 takes a fast path (single chunk = original text); if > 512 splits token IDs into non-overlapping 512-token windows, decodes each back to text via `tokenizer.decode(skip_special_tokens=True)`, then calls `_classify_chunks` on all chunks at once
+  - Score aggregation: `max` across chunks (pessimistic — one malicious chunk marks the whole prompt)
+  - Mirrors the official Meta `example.py` reference (`get_scores_for_texts`)
+- Files changed:
+  - `src/clawstrike/classifier.py` — added `_MAX_TOKENS`, `_classify_chunks`, refactored `classify`
+  - `tests/test_classifier.py` — updated `_make_classifier_with_logits` helper (added `body_token_count`, `side_effect` tokenizer mock, `decode` stub); added 7 new tests covering fast/chunked paths, boundary chunk counts, max aggregation, and buried middle-chunk detection
+  - `CLAUDE.md` — documented chunking pattern and updated test helper notes
+- **Learnings:**
+  - Official approach: decode token chunks back to text, re-tokenize as a batch — avoids manual CLS/SEP reconstruction and works with any tokenizer
+  - "Parallel" in the docs means batched inference, not threads — single forward pass over all chunks is the right interpretation
+  - Non-overlapping chunks (stride = window = 512) is the official recommendation; no overlap needed
+  - Mock tokenizer needs `side_effect` (list) not `return_value` when `classify()` calls it twice with different signatures
 ---

@@ -14,6 +14,9 @@ _MODEL_IDS: dict[ClassifierModel, str] = {
     ClassifierModel.ENGLISH_ONLY: "meta-llama/Llama-Prompt-Guard-2-22M",
 }
 
+# Maximum token window supported by the DeBERTa-based PromptGuard 2 model.
+_MAX_TOKENS: int = 512
+
 
 @dataclass
 class ClassifierResult:
@@ -49,24 +52,42 @@ class PromptGuardClassifier(BaseClassifier):
         self._model.to(device)
         self._model.eval()
 
-    def classify(self, text: str, temperature: float = 1.0) -> ClassifierResult:
+    def _classify_chunks(self, texts: list[str], temperature: float) -> float:
+        """Batch-classify a list of text chunks; return the max injection score."""
         import torch
         from torch.nn.functional import softmax
 
-        start = time.monotonic()
         inputs = self._tokenizer(
-            text,
+            texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=512,
+            max_length=_MAX_TOKENS,
         )
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
         with torch.no_grad():
             logits = self._model(**inputs).logits
         scaled_logits = logits / temperature
         probs = softmax(scaled_logits, dim=-1)
-        score: float = probs[0, 1].item()
+        return max(probs[:, 1].tolist())
+
+    def classify(self, text: str, temperature: float = 1.0) -> ClassifierResult:
+        start = time.monotonic()
+        token_ids = self._tokenizer(text, truncation=False, return_tensors="pt")[
+            "input_ids"
+        ][0]
+        if len(token_ids) <= _MAX_TOKENS:
+            chunk_texts = [text]
+        else:
+            chunks = [
+                token_ids[i : i + _MAX_TOKENS]
+                for i in range(0, len(token_ids), _MAX_TOKENS)
+            ]
+            chunk_texts = [
+                self._tokenizer.decode(chunk, skip_special_tokens=True)
+                for chunk in chunks
+            ]
+        score: float = self._classify_chunks(chunk_texts, temperature)
         label = "injection" if score > 0.5 else "benign"
         latency_ms = (time.monotonic() - start) * 1000
         return ClassifierResult(

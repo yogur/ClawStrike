@@ -46,7 +46,11 @@ def reset_server_config():
     """Reset module globals and mock create_classifier for each test.
 
     Patching create_classifier prevents any attempt to download real HF models.
-    The mock classifier returns a fixed benign ClassifierResult.
+    The mock classifier returns a fixed benign ClassifierResult by default;
+    individual tests may override mock_clf.classify.return_value to set a
+    specific score.
+
+    Yields the mock classifier so tests can configure score/label per-scenario.
     """
     import clawstrike.mcpserver as srv
 
@@ -56,10 +60,11 @@ def reset_server_config():
     )
 
     with patch("clawstrike.mcpserver.create_classifier", return_value=mock_clf):
-        yield
+        yield mock_clf
 
     srv._config = None
     srv._classifier = None
+    srv._elevated_sessions.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -279,3 +284,197 @@ async def test_all_three_tools_are_registered(cfg: ClawStrikeConfig) -> None:
     assert "health" in tool_names
     assert "classify" in tool_names
     assert "gate" in tool_names
+
+
+# ---------------------------------------------------------------------------
+# US-008 / US-009 / US-010 — Classifier Decision Pipeline
+# ---------------------------------------------------------------------------
+
+# Default threshold defaults: block=0.92, flag=0.70
+_SCORE_BLOCK = 0.95  # ≥ 0.92 → block
+_SCORE_FLAG = 0.80  # ≥ 0.70 and < 0.92 → flag
+_SCORE_PASS = 0.30  # < 0.70 → pass
+
+_CLASSIFY_ARGS = {
+    "text": "test input",
+    "source_id": "user@example.com",
+    "channel_type": "email_body",
+}
+
+
+@pytest.mark.asyncio
+async def test_classify_block_includes_reason(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_BLOCK, label="injection", model="mock-model", latency_ms=2.0
+    )
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    data = result.structured_content
+    assert data["decision"] == "block"
+    assert data["reason"] == "prompt_injection_detected"
+
+
+@pytest.mark.asyncio
+async def test_classify_block_includes_standard_fields(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_BLOCK, label="injection", model="mock-model", latency_ms=2.0
+    )
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    data = result.structured_content
+    assert data["score"] == _SCORE_BLOCK
+    assert data["label"] == "injection"
+    assert data["model"] == "mock-model"
+    assert data["latency_ms"] > 0
+
+
+@pytest.mark.asyncio
+async def test_classify_flag_includes_elevated_scrutiny(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_FLAG, label="injection", model="mock-model", latency_ms=2.0
+    )
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    data = result.structured_content
+    assert data["decision"] == "flag"
+    assert data["elevated_scrutiny"] is True
+
+
+@pytest.mark.asyncio
+async def test_classify_flag_has_no_reason_field(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_FLAG, label="injection", model="mock-model", latency_ms=2.0
+    )
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    assert "reason" not in result.structured_content
+
+
+@pytest.mark.asyncio
+async def test_classify_pass_decision_and_score(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=2.0
+    )
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    data = result.structured_content
+    assert data["decision"] == "pass"
+    assert data["score"] == _SCORE_PASS
+
+
+@pytest.mark.asyncio
+async def test_classify_pass_has_no_reason_or_elevated_scrutiny(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=2.0
+    )
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    data = result.structured_content
+    assert "reason" not in data
+    assert data.get("elevated_scrutiny") is not True
+
+
+@pytest.mark.asyncio
+async def test_classify_session_tagged_on_flag(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Flag classify for session X → gate for X reports elevated_scrutiny=True."""
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_FLAG, label="injection", model="mock-model", latency_ms=2.0
+    )
+    srv.init_server(cfg)
+    await srv.mcp.call_tool(
+        "classify",
+        {**_CLASSIFY_ARGS, "session_id": "session-001"},
+    )
+    gate_result = await srv.mcp.call_tool(
+        "gate",
+        {
+            "action_description": "read file",
+            "action_type": "file_read",
+            "session_id": "session-001",
+            "source_id": "user@example.com",
+            "channel_type": "email_body",
+        },
+    )
+    assert gate_result.structured_content["elevated_scrutiny"] is True
+
+
+@pytest.mark.asyncio
+async def test_classify_no_session_tag_on_pass(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Pass classify with session_id does NOT tag the session as elevated."""
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=2.0
+    )
+    srv.init_server(cfg)
+    await srv.mcp.call_tool(
+        "classify",
+        {**_CLASSIFY_ARGS, "session_id": "session-002"},
+    )
+    gate_result = await srv.mcp.call_tool(
+        "gate",
+        {
+            "action_description": "read file",
+            "action_type": "file_read",
+            "session_id": "session-002",
+            "source_id": "user@example.com",
+            "channel_type": "email_body",
+        },
+    )
+    assert gate_result.structured_content["elevated_scrutiny"] is False
+
+
+@pytest.mark.asyncio
+async def test_classify_session_not_tagged_without_session_id(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Flag classify without session_id does not pollute an arbitrary session."""
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_FLAG, label="injection", model="mock-model", latency_ms=2.0
+    )
+    srv.init_server(cfg)
+    # classify without session_id (defaults to empty string — no tagging)
+    await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    gate_result = await srv.mcp.call_tool(
+        "gate",
+        {
+            "action_description": "read file",
+            "action_type": "file_read",
+            "session_id": "unrelated-session",
+            "source_id": "user@example.com",
+            "channel_type": "email_body",
+        },
+    )
+    assert gate_result.structured_content["elevated_scrutiny"] is False

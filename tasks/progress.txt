@@ -5,7 +5,7 @@
 - `classifier.model` is the only required config field — all others have defaults.
 - Always use `uv run ruff format` to format; never manually wrap lines.
 - Quality check commands: `uv run pytest`, `uv run ruff check`, `uv run ruff format`.
-- MCP server lives in `src/clawstrike/mcpserver.py` (named for clarity over generic `server.py`). Module-level `mcp = FastMCP(...)` + `_config` + `_classifier` globals; `init_server(cfg)` injects config and loads classifier. Tests mock `create_classifier` via `patch("clawstrike.mcpserver.create_classifier", ...)` in autouse fixture; reset BOTH `_config` and `_classifier` to `None` after each test.
+- MCP server lives in `src/clawstrike/mcpserver.py`. Module-level globals: `_config`, `_classifier`, `_elevated_sessions: set[str]`. `init_server(cfg)` injects config, loads classifier, and resets `_elevated_sessions` to a fresh empty set. Tests mock `create_classifier` in autouse fixture, which **yields the mock_clf** so individual tests can configure `mock_clf.classify.return_value`. Teardown resets ALL THREE globals (`_config = None`, `_classifier = None`, `_elevated_sessions.clear()`).
 - FastMCP v3: `@mcp.tool` decorator (no parentheses). Test tools with `await mcp.call_tool(name, args)`, read result via `result.structured_content`. `RuntimeError` inside tools surfaces as `fastmcp.exceptions.ToolError` — assert `ToolError` in tests.
 - Test isolation for module globals: use an `autouse` fixture that resets the global back to `None` after each test.
 - Classifier module: `src/clawstrike/classifier.py` — `BaseClassifier` ABC, `PromptGuardClassifier`, `ClassifierResult` dataclass, `create_classifier(model)` factory. HF models require `HF_TOKEN` + Meta license acceptance. Never load real models in tests — always mock `create_classifier`. Use `PromptGuardClassifier.__new__()` to construct instances without `__init__` when testing `classify()` method directly.
@@ -76,6 +76,28 @@
   - `CLAUDE.md` — updated MCP server pattern, added classifier and CLI error-handling patterns
   - `tasks/clawstrike-user-stories.md` — marked US-005 and US-006 complete
 - All 57 tests pass; `ruff check` and `ruff format` clean
+---
+
+## [2026-02-23] - US-008 / US-009 / US-010
+
+- What was implemented:
+  - **US-008 (Block):** `classify` now adds `"reason": "prompt_injection_detected"` when `decision == "block"` (score ≥ threshold.block)
+  - **US-009 (Flag):** `classify` now adds `"elevated_scrutiny": True` when `decision == "flag"` (score ≥ flag, < block). Accepts optional `session_id: str = ""` — if non-empty, inserts the session into `_elevated_sessions` module global. `gate` tool reads `_elevated_sessions` and returns `"elevated_scrutiny": bool` in its response.
+  - **US-010 (Pass):** No extra fields added for pass decisions; existing fields satisfy the AC. Verified no `reason`/`elevated_scrutiny` leak into pass responses.
+  - Added `_elevated_sessions: set[str]` module global to `mcpserver.py`; `init_server()` resets it to a fresh empty set on (re)startup.
+  - Updated autouse fixture in `tests/test_server.py` to yield the mock classifier and call `srv._elevated_sessions.clear()` in teardown.
+  - Added 9 new tests covering block/flag/pass response shapes, session tagging, and gate elevation surfacing.
+- Files changed:
+  - `src/clawstrike/mcpserver.py` — added `_elevated_sessions`, updated `init_server`, updated `classify` signature and response, updated `gate` response
+  - `tests/test_server.py` — updated autouse fixture (yield mock_clf + clear _elevated_sessions), added US-008/009/010 test section (9 tests)
+  - `CLAUDE.md` — updated MCP server pattern + added session elevation and response shape patterns
+  - `tasks/clawstrike-user-stories.md` — marked completed ACs for US-008/009/010
+- All 76 tests pass; `ruff check` and `ruff format` clean
+- **Learnings for future iterations:**
+  - The autouse fixture should **yield the mock** (not a bare `yield`) so individual tests can override `mock_clf.classify.return_value` per-scenario. Tests that don't need a specific score just ignore the yielded value.
+  - `_elevated_sessions` is an in-memory set — it survives for the lifetime of the process. `init_server()` must reset it (not just `_config`/`_classifier`) to guarantee clean state between tests and across real restarts.
+  - Session ID `""` (empty string) is used as the "no session tracking" sentinel — truthy check guards the `_elevated_sessions.add()` call.
+  - The full trust-downgrade logic for elevated sessions (US-022: high→medium, medium→low, etc.) is deferred to US-022 and the full gating engine (US-017/018). US-009 only requires the classification pipeline to tag sessions and surface the flag in the gate response.
 - **Learnings for future iterations:**
   - The Llama Prompt Guard 2 models are binary (BENIGN/MALICIOUS). Class 1 probability = score. Map score > 0.5 → label "injection"; ≤ 0.5 → "benign". The "jailbreak" label is reserved for finer-grained future models.
   - HF models require Meta license acceptance + `HF_TOKEN` env var before first download. Cache at `~/.cache/huggingface/hub/`. 86M model ≈ 330 MB; 22M ≈ 90 MB.

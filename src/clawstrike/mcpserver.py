@@ -31,6 +31,11 @@ mcp = FastMCP(
 _config: ClawStrikeConfig | None = None
 _classifier: BaseClassifier | None = None
 
+# Sessions tagged for elevated scrutiny (from flag decisions in classify).
+# Keyed by session_id strings; cleared on init_server() to ensure clean state
+# across restarts.
+_elevated_sessions: set[str] = set()
+
 
 def init_server(cfg: ClawStrikeConfig) -> None:
     """Inject configuration into the module-level server.
@@ -40,7 +45,8 @@ def init_server(cfg: ClawStrikeConfig) -> None:
     For ``fastmcp run``, set the CLAWSTRIKE_CONFIG env var to the path of
     your clawstrike.yaml and the module will auto-initialize on import.
     """
-    global _config, _classifier
+    global _config, _classifier, _elevated_sessions
+    _elevated_sessions = set()
     _classifier = create_classifier(cfg.classifier.model)
     _config = cfg
 
@@ -86,6 +92,7 @@ async def classify(
     text: str,
     source_id: str,
     channel_type: str,
+    session_id: str = "",
 ) -> dict[str, Any]:
     """Classify inbound text for prompt injection.
 
@@ -95,23 +102,30 @@ async def classify(
                    (e.g. email address, Discord user ID).
         channel_type: Channel through which the message arrived
                       (e.g. ``owner_dm``, ``email_body``, ``webhook``).
+        session_id: Optional session identifier. When provided and the decision
+                    is ``flag``, the session is tagged for elevated scrutiny so
+                    that subsequent ``gate`` calls can apply stricter gating.
 
     Returns:
         A dict with keys: decision (pass|flag|block), score (0.0–1.0),
         label (benign|injection|jailbreak), model, latency_ms.
+        Block decisions also include ``reason: "prompt_injection_detected"``.
+        Flag decisions also include ``elevated_scrutiny: true``.
     """
     cfg = _require_config()
     clf = _require_classifier()
     result: ClassifierResult = clf.classify(text)
     block_t = cfg.classifier.threshold.block
     flag_t = cfg.classifier.threshold.flag
+
     if result.score >= block_t:
         decision = "block"
     elif result.score >= flag_t:
         decision = "flag"
     else:
         decision = "pass"
-    return {
+
+    response: dict[str, Any] = {
         "decision": decision,
         "score": result.score,
         "label": result.label,
@@ -120,6 +134,15 @@ async def classify(
         "source_id": source_id,
         "channel_type": channel_type,
     }
+
+    if decision == "block":
+        response["reason"] = "prompt_injection_detected"
+    elif decision == "flag":
+        response["elevated_scrutiny"] = True
+        if session_id:
+            _elevated_sessions.add(session_id)
+
+    return response
 
 
 @mcp.tool
@@ -142,7 +165,9 @@ async def gate(
 
     Returns:
         A dict with keys: risk_level (critical|high|medium|low),
-        recommendation (allow|block|prompt_user), trust_level, reason.
+        recommendation (allow|block|prompt_user), trust_level, reason,
+        and elevated_scrutiny (bool) reflecting whether this session was
+        flagged for elevated scrutiny by a prior classify call.
     """
     _require_config()
     # Stub implementation — full gating engine ships in US-017 / US-018.
@@ -151,6 +176,7 @@ async def gate(
         "recommendation": "allow",
         "trust_level": "medium",
         "reason": "gating_not_yet_implemented",
+        "elevated_scrutiny": session_id in _elevated_sessions,
         "action_type": action_type,
         "session_id": session_id,
         "source_id": source_id,

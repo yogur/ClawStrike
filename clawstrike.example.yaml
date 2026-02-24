@@ -2,7 +2,7 @@ clawstrike:
   mode: "skill"  # Only "skill" is supported in the MVP.
 
   mcp:
-    transport: "stdio"  # stdio is the default for local MCP integrations.
+    enabled: true  # set to false if your agent uses CLI integration instead
 
   classifier:
     # Required. Choose the prompt injection detection model.

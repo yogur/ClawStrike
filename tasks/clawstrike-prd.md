@@ -51,10 +51,21 @@ The **MVP ships with Skill Mode only** — a lightweight, advisory integration t
 
 ### 3.1 Skill Mode (Advisory) — MVP
 
-- **Integration method:** User installs a ClawStrike skill via ClawHub. The skill's system prompt instructs OpenClaw to route inputs and outputs through ClawStrike before acting. ClawStrike runs as an **MCP (Model Context Protocol) server** exposing `classify` and `gate` as callable tools. OpenClaw connects to the ClawStrike MCP server, and the skill instructs the LLM to call these tools at the appropriate points in its workflow. The default transport is **stdio** (standard for local MCP integrations).
+- **Integration method:** User installs a ClawStrike skill via ClawHub. The skill's system prompt instructs OpenClaw to route inputs and outputs through ClawStrike before acting.
 - **Enforcement model:** Best-effort, advisory only. The LLM is asked to voluntarily comply with ClawStrike's assessments. A sufficiently advanced prompt injection can instruct the LLM to ignore the ClawStrike skill.
 - **What this validates:** Classifier accuracy, trust tier logic, threshold tuning, contact registry behavior, audit logging, and the overall user experience. These are the core capabilities that must work correctly before enforcement mode adds value.
 - **Limitations:** Not a security boundary. The LLM can be instructed to bypass the skill. Action gating is advisory — ClawStrike recommends blocking, but the LLM decides whether to comply. Effective against unsophisticated attacks; insufficient for high-risk deployments.
+
+Skill Mode supports two invocation methods:
+
+| Method | Transport | Use case | Session elevation |
+|--------|-----------|----------|-------------------|
+| **MCP** | stdio persistent process | MCP-capable agents (full feature set) | Supported |
+| **CLI** | One-shot shell execution | Shell-execution agents like OpenClaw | Not supported (in-memory state requires a persistent process) |
+
+For **MCP integration**, start ClawStrike with `clawstrike start` (or `fastmcp run`). The agent calls `classify` and `gate` as MCP tools. Set `mcp.enabled: true` (the default).
+
+For **CLI integration** (e.g., OpenClaw), the agent skill invokes `clawstrike classify --json ...` and `clawstrike gate --json ...` as shell commands. Each invocation is independent (one-shot); the model cold-starts on every call (~1–2s). Session-scoped features (`elevated_scrutiny`) are unavailable in CLI mode. Set `mcp.enabled: false` to prevent `clawstrike start` from starting an unused listener.
 
 ### 3.2 Proxy Mode (Enforcement) — Phase 1.5
 
@@ -427,9 +438,9 @@ clawstrike:
   # MVP: Only skill mode is supported. Proxy mode ships in Phase 1.5.
   mode: "skill"
 
-  # MVP: MCP server configuration (stdio transport, used by OpenClaw skill)
+  # MCP server toggle. Set to false for CLI integration (e.g., OpenClaw).
   mcp:
-    transport: "stdio"          # "stdio" (MVP default) or "http" (Phase 1.5)
+    enabled: true               # false → `clawstrike start` exits cleanly without starting a listener
 
   # Phase 1.5 (not active in MVP)
   proxy:

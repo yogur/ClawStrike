@@ -13,7 +13,6 @@ from clawstrike.config import (
     ClawStrikeMode,
     LlmJudgeTrigger,
     RunMode,
-    TransportMode,
     TrustLevel,
     load_config,
 )
@@ -31,7 +30,7 @@ def write_yaml(tmp_path: Path, data: dict) -> Path:
 
 
 def minimal_config(extra: dict | None = None) -> dict:
-    """Return the minimum valid config dict (only required fields)."""
+    """Return a minimal valid config dict. classifier.model now has a default."""
     base: dict = {"clawstrike": {"classifier": {"model": "multilingual"}}}
     if extra:
         base["clawstrike"].update(extra)
@@ -60,28 +59,22 @@ def test_raises_if_file_not_found(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_error_on_missing_classifier_model(tmp_path: Path) -> None:
-    """classifier.model is required; ValueError must name the field."""
+def test_missing_classifier_model_uses_default(tmp_path: Path) -> None:
+    """classifier.model now has a default (MULTILINGUAL); empty block is valid."""
     data = {"clawstrike": {"classifier": {}}}
     cfg_file = write_yaml(tmp_path, data)
 
-    with pytest.raises(ValueError) as exc_info:
-        load_config(cfg_file)
-
-    error_msg = str(exc_info.value)
-    assert "classifier" in error_msg
-    assert "model" in error_msg
+    config = load_config(cfg_file)
+    assert config.classifier.model == ClassifierModel.MULTILINGUAL
 
 
-def test_error_on_missing_classifier_section_entirely(tmp_path: Path) -> None:
-    """Omitting the classifier block entirely must raise ValueError."""
+def test_missing_classifier_section_uses_default(tmp_path: Path) -> None:
+    """Omitting the classifier block entirely now uses all defaults."""
     data = {"clawstrike": {}}
     cfg_file = write_yaml(tmp_path, data)
 
-    with pytest.raises(ValueError) as exc_info:
-        load_config(cfg_file)
-
-    assert "classifier" in str(exc_info.value)
+    config = load_config(cfg_file)
+    assert config.classifier.model == ClassifierModel.MULTILINGUAL
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +144,7 @@ def test_defaults_mode_and_mcp(tmp_path: Path) -> None:
     config = load_config(cfg_file)
 
     assert config.mode == ClawStrikeMode.SKILL
-    assert config.mcp.transport == TransportMode.STDIO
+    assert config.mcp.enabled is True
 
 
 def test_defaults_trust(tmp_path: Path) -> None:
@@ -348,12 +341,14 @@ def test_custom_thresholds_override_defaults(tmp_path: Path) -> None:
     assert config.classifier.threshold.flag == pytest.approx(0.60)
 
 
-def test_empty_yaml_raises_on_missing_classifier(tmp_path: Path) -> None:
+def test_empty_yaml_uses_all_defaults(tmp_path: Path) -> None:
+    """An empty YAML file now produces a fully-defaulted config."""
     cfg_file = tmp_path / "clawstrike.yaml"
     cfg_file.write_text("")  # empty file
 
-    with pytest.raises(ValueError):
-        load_config(cfg_file)
+    config = load_config(cfg_file)
+    assert config.classifier.model == ClassifierModel.MULTILINGUAL
+    assert config.mcp.enabled is True
 
 
 def test_partial_config_with_audit_override(tmp_path: Path) -> None:
@@ -374,3 +369,45 @@ def test_partial_config_with_audit_override(tmp_path: Path) -> None:
     assert config.audit.db_path == Path("/tmp/audit.db")
     # defaults still applied for other audit fields
     assert config.audit.raw_input_max_chars == 200
+
+
+# ---------------------------------------------------------------------------
+# AC: mcp.enabled config toggle (new in CLI integration story)
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_enabled_true_explicit(tmp_path: Path) -> None:
+    data = minimal_config({"mcp": {"enabled": True}})
+    cfg_file = write_yaml(tmp_path, data)
+    config = load_config(cfg_file)
+    assert config.mcp.enabled is True
+
+
+def test_mcp_enabled_false(tmp_path: Path) -> None:
+    data = minimal_config({"mcp": {"enabled": False}})
+    cfg_file = write_yaml(tmp_path, data)
+    config = load_config(cfg_file)
+    assert config.mcp.enabled is False
+
+
+def test_mcp_old_transport_key_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """Old mcp.transport key triggers an unknown-field warning, not a hard error."""
+    data = minimal_config({"mcp": {"transport": "stdio"}})
+    cfg_file = write_yaml(tmp_path, data)
+
+    config = load_config(cfg_file)  # must NOT raise
+
+    captured = capsys.readouterr()
+    assert "transport" in captured.err
+    assert "Warning" in captured.err
+    assert config.mcp.enabled is True  # default still applies
+
+
+def test_clawstrike_config_no_args_uses_defaults() -> None:
+    """ClawStrikeConfig() with no arguments uses all defaults (no config file needed)."""
+    config = ClawStrikeConfig()
+    assert config.classifier.model == ClassifierModel.MULTILINGUAL
+    assert config.mcp.enabled is True
+    assert config.mode == ClawStrikeMode.SKILL

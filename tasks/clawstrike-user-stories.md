@@ -34,6 +34,8 @@
 - [x] The server exposes a `gate` MCP tool that accepts `action_description`, `action_type`, `session_id`, `source_id`, and `channel_type` parameters and returns a gating recommendation
 - [x] The server exposes a `health` MCP tool that returns `{"status": "ok", "mode": "skill", "classifier": "<model_name>"}`
 - [x] The MCP server can also be started directly via `fastmcp run` for development/testing
+- [x] `clawstrike start` with no config file starts the MCP server using all defaults (no `clawstrike.yaml` required)
+- [x] Setting `mcp.enabled: false` in config causes `clawstrike start` to print an informational message and exit 0 without starting a listener
 
 ---
 
@@ -43,10 +45,24 @@
 
 **Acceptance Criteria:**
 - [ ] The repository includes a `skills/clawstrike/` directory containing a complete OpenClaw skill definition
-- [ ] The skill's system prompt instructs the LLM to: (1) call the `classify` MCP tool with all inbound messages before acting, (2) call the `gate` MCP tool with planned actions before executing, and (3) comply with block/flag/prompt recommendations
-- [ ] The skill definition configures the ClawStrike MCP server connection (stdio transport)
+- [ ] The skill's system prompt instructs the LLM to: (1) call `clawstrike classify --json ...` with all inbound messages before acting, (2) call `clawstrike gate --json ...` with planned actions before executing, and (3) comply with block/flag/prompt recommendations
+- [ ] The skill definition invokes ClawStrike via shell execution (OpenClaw does not support native MCP server connections)
 - [ ] The skill can be installed into OpenClaw via standard ClawHub installation or manual file copy
-- [ ] A README in the skill directory documents installation steps including MCP server setup
+- [ ] A README in the skill directory documents installation steps; recommends setting `mcp.enabled: false` in `clawstrike.yaml` for OpenClaw deployments
+
+---
+
+### US-019: CLI Integration Mode [DONE]
+
+**Description:** As a ClawStrike user deploying with OpenClaw or another shell-execution agent, I want to call `clawstrike classify` and `clawstrike gate` as one-shot JSON commands so that I get classification and gating without needing MCP support in my agent.
+
+**Acceptance Criteria:**
+- [x] `clawstrike classify --json '{"text":..., "source_id":..., "channel_type":...}'` prints a JSON result to stdout and exits 0
+- [x] `clawstrike gate --json '{"action_description":..., "action_type":..., "session_id":..., "source_id":..., "channel_type":...}'` prints a JSON result to stdout and exits 0
+- [x] `clawstrike health` prints `{"status": "ok", "mode": ..., "classifier": ..., "mcp_enabled": ...}` to stdout (config-only, no model load)
+- [x] Invalid `--json` input → exit code 1, error message to stderr
+- [x] Model cold-start (~1–2s) is a documented trade-off vs MCP mode's persistent process (session elevation / `elevated_scrutiny` requires a persistent process and is absent from CLI responses)
+- [x] All three commands accept `--config` / `-c` and fall back to all-defaults when the default `clawstrike.yaml` is absent
 
 ---
 

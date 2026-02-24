@@ -20,11 +20,6 @@ class ClawStrikeMode(StrEnum):
     PROXY = "proxy"
 
 
-class TransportMode(StrEnum):
-    STDIO = "stdio"
-    HTTP = "http"
-
-
 class ClassifierModel(StrEnum):
     MULTILINGUAL = "multilingual"  # Llama Prompt Guard 2 86M
     ENGLISH_ONLY = "english-only"  # Llama Prompt Guard 2 22M
@@ -64,8 +59,7 @@ class ThresholdConfig(BaseModel):
 class ClassifierConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    # Required — no default. Startup fails if omitted.
-    model: ClassifierModel
+    model: ClassifierModel = ClassifierModel.MULTILINGUAL
     run_mode: RunMode = RunMode.LOCAL
     threshold: ThresholdConfig = Field(default_factory=ThresholdConfig)
 
@@ -73,7 +67,7 @@ class ClassifierConfig(BaseModel):
 class McpConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    transport: TransportMode = TransportMode.STDIO
+    enabled: bool = True
 
 
 class ProxyConfig(BaseModel):
@@ -150,8 +144,7 @@ class ClawStrikeConfig(BaseModel):
     mcp: McpConfig = Field(default_factory=McpConfig)
     # proxy block is always parsed and validated, even in skill mode (US-001 AC).
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
-    # Required — startup fails with a clear error if omitted.
-    classifier: ClassifierConfig
+    classifier: ClassifierConfig = Field(default_factory=ClassifierConfig)
     trust: TrustConfig = Field(default_factory=TrustConfig)
     action_gating: ActionGatingConfig = Field(default_factory=ActionGatingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
@@ -160,11 +153,15 @@ class ClawStrikeConfig(BaseModel):
 
 
 class _RootConfig(BaseModel):
-    """Wrapper that expects `clawstrike:` as the top-level key."""
+    """Wrapper that expects `clawstrike:` as the top-level key.
+
+    The ``clawstrike`` key is optional — an empty or absent YAML file produces
+    a fully-defaulted :class:`ClawStrikeConfig`.
+    """
 
     model_config = ConfigDict(extra="allow")
 
-    clawstrike: ClawStrikeConfig
+    clawstrike: ClawStrikeConfig = Field(default_factory=ClawStrikeConfig)
 
 
 # ---------------------------------------------------------------------------

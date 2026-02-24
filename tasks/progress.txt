@@ -2,7 +2,8 @@
 - Use `StrEnum` for all enum classes (Python 3.11+). `ruff` UP042 flags `(str, Enum)` style.
 - All Pydantic config models use `ConfigDict(extra="allow")` so unknown YAML fields land in `model_extra` for warning.
 - When adding new nested config models, register them in `_NESTED` dict in `config.py` so `_collect_extra_paths()` can recurse into them.
-- `classifier.model` is the only required config field — all others have defaults.
+- **All config fields are optional with defaults** — `classifier.model` defaults to `MULTILINGUAL`, `ClawStrikeConfig()` with no args works. `_RootConfig.clawstrike` has a `default_factory` so empty/absent YAML files produce all-defaults.
+- `McpConfig.enabled: bool = True` — replaces old `transport: TransportMode` (which was removed). Set `false` to skip MCP server startup.
 - Always use `uv run ruff format` to format; never manually wrap lines.
 - Quality check commands: `uv run pytest`, `uv run ruff check`, `uv run ruff format`.
 - MCP server lives in `src/clawstrike/mcpserver.py`. Module-level globals: `_config`, `_classifier`, `_elevated_sessions: set[str]`. `init_server(cfg)` injects config, loads classifier, and resets `_elevated_sessions` to a fresh empty set. Tests mock `create_classifier` in autouse fixture, which **yields the mock_clf** so individual tests can configure `mock_clf.classify.return_value`. Teardown resets ALL THREE globals (`_config = None`, `_classifier = None`, `_elevated_sessions.clear()`).
@@ -124,4 +125,34 @@
   - "Parallel" in the docs means batched inference, not threads — single forward pass over all chunks is the right interpretation
   - Non-overlapping chunks (stride = window = 512) is the official recommendation; no overlap needed
   - Mock tokenizer needs `side_effect` (list) not `return_value` when `classify()` calls it twice with different signatures
+---
+
+## [2026-02-24] - CLI Integration Mode & MCP Config Toggle
+
+- What was implemented:
+  - **CLI commands:** `clawstrike classify --json '...'`, `clawstrike gate --json '...'`, `clawstrike health` — one-shot JSON-in/JSON-out commands that work without MCP support in the agent
+  - **`mcp.enabled: bool = True`** added to `McpConfig`; removed dead `TransportMode` enum and `transport` field. `clawstrike start` with `mcp.enabled: false` exits 0 with an informational message.
+  - **No-config fallback:** `clawstrike start` (and all CLI commands) fall back to `ClawStrikeConfig()` all-defaults when the default `clawstrike.yaml` is absent. Explicit `--config path` to a missing file still exits 1.
+  - **`classifier.model` now has default** (`MULTILINGUAL`). `ClassifierConfig()` and `ClawStrikeConfig()` work with no args. `_RootConfig.clawstrike` gained `default_factory=ClawStrikeConfig` so empty/absent YAML is valid.
+  - `_load_cfg_or_defaults(path)` helper in `cli.py` centralizes the fallback logic.
+  - `health` CLI command is config-only — no `init_server` call, no model load.
+  - Updated `clawstrike.example.yaml`: `mcp.transport` → `mcp.enabled: true`
+  - Added US-019 (CLI Integration Mode); updated US-002, US-003 in user stories
+  - Updated PRD Section 3.1 (dual invocation table) and Section 7 (config reference)
+- Files changed:
+  - `src/clawstrike/config.py` — removed `TransportMode`; `McpConfig.enabled`; `ClassifierConfig.model` default; `ClawStrikeConfig.classifier` default_factory; `_RootConfig.clawstrike` default_factory
+  - `src/clawstrike/cli.py` — added `asyncio`, `json`, `ClawStrikeConfig` imports; `_load_cfg_or_defaults` helper; updated `start`; added `classify`, `gate`, `health` commands
+  - `clawstrike.example.yaml` — replaced `transport: "stdio"` with `enabled: true`
+  - `tests/test_config.py` — removed `TransportMode` import; updated 3 tests that expected errors for missing classifier (now use defaults); updated `test_defaults_mode_and_mcp`; added 4 new tests for `mcp.enabled`, old `transport` key warning, `ClawStrikeConfig()` no-args
+  - `tests/test_cli.py` — updated `test_start_invalid_config_exits_1` (needed an actually invalid value); added 10 new tests covering no-config start, mcp-disabled start, `health`, `classify`, `gate`
+  - `tasks/clawstrike-user-stories.md` — updated US-002/US-003; added US-019
+  - `tasks/clawstrike-prd.md` — Section 3.1 dual-invocation table; Section 7 mcp.enabled
+- All 192 tests pass; `ruff check` and `ruff format` clean
+- **Learnings for future iterations:**
+  - `_RootConfig` must have `clawstrike: ClawStrikeConfig = Field(default_factory=ClawStrikeConfig)` (not just required) for empty YAML files to work. Without this, `{}` fails Pydantic validation even though all nested fields have defaults.
+  - Typer distinguishes "user didn't pass --config" from "user passed --config X" only at parse time. The workaround: compare `config != Path("clawstrike.yaml")` (the default) to detect an explicit vs implicit path. This is the idiomatic Typer approach since Typer doesn't expose an "was this explicitly set?" flag.
+  - When a Typer test (`CliRunner.invoke`) previously caught a `ValueError`/`FileNotFoundError` from config loading, those tests break silently when the config becomes valid. Always verify that "invalid config" tests use a value that is *still* invalid (e.g., a bad enum value like `"model": "bad-model"`, not an empty section that now has a default).
+  - `asyncio.run(srv.classify(...))` works correctly from CLI commands — the `@mcp.tool` decorated functions are plain async callables; FastMCP v3 doesn't wrap them in a way that prevents direct invocation.
+  - `monkeypatch.chdir(tmp_path)` is the right way to test "no config file in working directory" scenarios — avoids accidentally picking up the real project's `clawstrike.yaml` during test runs.
+  - `elevated_scrutiny` is absent in CLI responses by design (documented limitation). In-memory session state in `_elevated_sessions` requires a persistent process; one-shot CLI invocations have no shared memory.
 ---

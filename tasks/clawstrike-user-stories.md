@@ -199,6 +199,8 @@
 - [ ] Each manual override is recorded in the audit log with `event_type: "trust_update"` and `created_by: "owner"`
 - [ ] Running `/clawstrike trust` or `/clawstrike block` with a non-existent `source_id` returns an error: `"Contact not found. Source must have at least one prior interaction."`
 
+Note: should not be possible by default unless config file exists and allows this feature (or enables risky features). Also, we should recommend to make the config-file non-agent writable via filesystem permissions for additional security.
+
 ---
 
 ### US-015: Trust-Modulated Classifier Thresholds [DONE]
@@ -330,7 +332,7 @@
 
 ---
 
-### US-025: Audit Log CLI — Query by Time Range
+### US-025: Audit Log CLI — Query by Time Range *(Deferred — Phase 2)*
 
 **Description:** As a ClawStrike user, I want to query audit logs by time range so that I can review recent activity.
 
@@ -343,7 +345,7 @@
 
 ---
 
-### US-026: Audit Log CLI — Query by Source
+### US-026: Audit Log CLI — Query by Source *(Deferred — Phase 2)*
 
 **Description:** As a ClawStrike user, I want to query audit logs by source identifier so that I can investigate all activity from a specific contact.
 
@@ -354,7 +356,7 @@
 
 ---
 
-### US-027: Audit Log CLI — Query by Event Type and Decision
+### US-027: Audit Log CLI — Query by Event Type and Decision *(Deferred — Phase 2)*
 
 **Description:** As a ClawStrike user, I want to filter audit logs by event type and decision so that I can quickly find blocks, flags, or trust changes.
 
@@ -380,7 +382,7 @@
 
 ---
 
-### US-029: Audit Log Retention Cleanup
+### US-029: Audit Log Retention Cleanup *(Deferred — Phase 2)*
 
 **Description:** As a ClawStrike user, I want old audit log entries to be automatically purged based on my configured retention period so that the database doesn't grow unbounded.
 

@@ -5,6 +5,8 @@
 - Trust engine is pure functions in `src/clawstrike/trust.py` — no side effects, no mocking needed in unit tests
 - `classify` tool response always includes `trust_level` and `threshold_applied` since US-011/015; tests that assert on block/flag/pass decisions must account for the channel_type modifier (e.g., `email_body` is LOW trust → eff_block = 0.87, not 0.92)
 - `gate` tool's `trust_level` field is now dynamically resolved from `channel_type`, not hardcoded
+- Interaction tracking: `classify` captures full `ContactRecord` (not just `is_first_contact`) from phase-1 DB read; phase-2 DB block performs increment + conditional auto-promotion. Auto-promo guard: `contact.trust_level == "auto"` (pre-increment) ensures manual overrides ('trusted'/'blocked') are never overwritten.
+- DB write phase in `classify` is a single `open_db` block that can contain: `increment_interaction`, `set_contact_trust_level`, `insert_audit_event` (trust_update), and `insert_audit_event` (classify). All within one SQLite connection per request.
 
 ---
 
@@ -70,4 +72,32 @@
 - **Per-test DB isolation:** The `cfg` fixture now injects `audit.db_path = tmp_path / "test.db"`. The autouse fixture resets `srv._db_path = None` in teardown. This prevents state leakage between tests.
 - **First-contact changes trust level for ALL existing tests:** Any test that asserts on `trust_level` in a `classify` response must account for the first-contact UNTRUSTED override. Two tests were updated: `test_classify_response_includes_trust_level` (assertion changed to "untrusted") and `test_classify_high_trust_raises_block_threshold` (added seed call to pre-register contact).
 - **`aiosqlite.Row` factory:** Set `conn.row_factory = aiosqlite.Row` inside the `async with aiosqlite.connect(...)` block. Enables dict-style column access (`row["source_id"]`) which is more robust than positional indexing.
+---
+
+## [2026-02-24] - US-013
+
+### What was implemented
+
+**US-013 (Contact Registry — Interaction Tracking & Auto-Promotion):**
+- `db.py`: added `increment_interaction(conn, source_id) -> ContactRecord` — UPDATE + SELECT to atomically increment count and return the updated record; added `set_contact_trust_level(conn, source_id, trust_level) -> None` — simple UPDATE for manual/auto trust changes
+- `mcpserver.py`: `classify` now captures the full `ContactRecord` (not just `is_first_contact`) from phase-1 `get_or_create_contact`. Phase-2 DB block: if NOT first-contact AND decision != "block", calls `increment_interaction`; then checks `contact.trust_level == "auto"` (pre-increment value) AND `updated.interaction_count >= cfg.trust.auto_promote_after` to trigger promotion: calls `set_contact_trust_level` + writes a `trust_update` audit event with `details.reason = "auto_promote"`. All four DB operations (increment, set_trust, audit trust_update, audit classify) happen in one `open_db` context.
+- DB import list in `mcpserver.py` expanded to multi-line for readability.
+
+### Files changed
+
+- **Modified:** `src/clawstrike/db.py` — added `increment_interaction()` and `set_contact_trust_level()`
+- **Modified:** `src/clawstrike/mcpserver.py` — updated `classify` with interaction tracking + auto-promotion logic; updated import
+- **Modified:** `tests/test_db.py` — 7 new unit tests for the two new DB functions
+- **Modified:** `tests/test_server.py` — 8 new integration tests (increment on pass/flag, no-increment on block, auto-promote at threshold, trust_update audit event, no-promote before threshold, no-promote for manual overrides, promote only once); added `_get_contact_from_db` and `_get_audit_events` local helpers
+- **Modified:** `tasks/clawstrike-user-stories.md` — marked US-013 as DONE
+- **Modified:** `CLAUDE.md` — added US-013 patterns
+- **Modified:** `progress.txt` — this entry
+
+### Test count: 116 → 131 (15 new tests)
+
+### Learnings for future iterations:
+- **Use pre-increment `contact.trust_level` for the promotion gate.** The check `contact.trust_level == "auto"` uses the value captured BEFORE `increment_interaction` is called. This is correct: if the contact had already been promoted (trust_level='low'), the check correctly skips re-promotion. Using the post-increment value from `updated` would also work since `increment_interaction` doesn't change trust_level, but semantically the pre-increment record is cleaner.
+- **Block the entire phase-2 in one `open_db` context.** Consolidating increment + optional trust update + audit events into a single connection avoids 3 separate `open_db` calls and is still safe since `open_db` is idempotent.
+- **`_get_contact_from_db` helper re-uses `get_or_create_contact`.** This works because a known contact just returns `is_first_contact=False` with the stored record. Slightly indirect but avoids duplicating the SELECT query.
+- **`auto_promote_after` is checked AFTER the increment.** So with `auto_promote_after=5`, the 5th total non-blocked interaction (count 1 from creation + 4 increments → count=5 on the 5th classify call, but actually: count=1 from creation, then 1st non-first-contact call: count=2, ..., 4th: count=5) triggers promotion. Test uses 5 total `call_tool` calls (1 first-contact + 4 increments = count=5 → promote).
 ---

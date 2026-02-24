@@ -10,7 +10,13 @@ from fastmcp import FastMCP
 
 from clawstrike.classifier import BaseClassifier, ClassifierResult, create_classifier
 from clawstrike.config import ClawStrikeConfig, TrustLevel
-from clawstrike.db import get_or_create_contact, insert_audit_event, open_db
+from clawstrike.db import (
+    get_or_create_contact,
+    increment_interaction,
+    insert_audit_event,
+    open_db,
+    set_contact_trust_level,
+)
 from clawstrike.trust import compute_effective_thresholds, resolve_trust_level
 
 # ---------------------------------------------------------------------------
@@ -122,9 +128,10 @@ async def classify(
 
     # Contact registry — detect first contact (US-012).
     is_first_contact = False
+    contact = None
     if _db_path:
         async with open_db(_db_path) as conn:
-            _, is_first_contact = await get_or_create_contact(
+            contact, is_first_contact = await get_or_create_contact(
                 conn, source_id, channel_type
             )
 
@@ -148,9 +155,34 @@ async def classify(
     else:
         decision = "pass"
 
-    # Audit log — record is_first_contact (US-012 AC5).
+    # Post-decision DB writes: interaction tracking + audit log (US-013, US-012).
     if _db_path:
         async with open_db(_db_path) as conn:
+            # Increment interaction_count for known, non-blocked contacts (US-013 AC1).
+            if not is_first_contact and decision != "block" and contact is not None:
+                updated = await increment_interaction(conn, source_id)
+                # Auto-promote when interaction_count reaches the configured threshold
+                # and the contact has never been manually overridden (US-013 AC2-AC4).
+                if (
+                    contact.trust_level == "auto"
+                    and updated.interaction_count >= cfg.trust.auto_promote_after
+                ):
+                    promoted_trust = resolve_trust_level(channel_type, cfg.trust)
+                    await set_contact_trust_level(conn, source_id, promoted_trust.value)
+                    await insert_audit_event(
+                        conn,
+                        event_type="trust_update",
+                        session_id=session_id,
+                        source_id=source_id,
+                        channel_type=channel_type,
+                        trust_level=promoted_trust.value,
+                        details={
+                            "previous_trust": "auto",
+                            "new_trust": promoted_trust.value,
+                            "reason": "auto_promote",
+                            "interaction_count": updated.interaction_count,
+                        },
+                    )
             await insert_audit_event(
                 conn,
                 event_type="classify",

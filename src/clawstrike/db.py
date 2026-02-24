@@ -129,6 +129,50 @@ async def get_or_create_contact(
     )
 
 
+async def increment_interaction(
+    conn: aiosqlite.Connection,
+    source_id: str,
+) -> ContactRecord:
+    """Increment interaction_count and update last_seen for a known contact.
+
+    Returns the updated ContactRecord after the write.
+    """
+    now = datetime.now(UTC).isoformat()
+    await conn.execute(
+        "UPDATE contacts SET interaction_count = interaction_count + 1, "
+        "last_seen = ? WHERE source_id = ?",
+        (now, source_id),
+    )
+    await conn.commit()
+    async with conn.execute(
+        "SELECT source_id, channel_type, trust_level, first_seen, last_seen, "
+        "interaction_count FROM contacts WHERE source_id = ?",
+        (source_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return ContactRecord(
+        source_id=row["source_id"],
+        channel_type=row["channel_type"],
+        trust_level=row["trust_level"],
+        first_seen=datetime.fromisoformat(row["first_seen"]),
+        last_seen=datetime.fromisoformat(row["last_seen"]),
+        interaction_count=row["interaction_count"],
+    )
+
+
+async def set_contact_trust_level(
+    conn: aiosqlite.Connection,
+    source_id: str,
+    trust_level: str,
+) -> None:
+    """Update the stored trust_level for a contact."""
+    await conn.execute(
+        "UPDATE contacts SET trust_level = ? WHERE source_id = ?",
+        (trust_level, source_id),
+    )
+    await conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # Audit Events
 # ---------------------------------------------------------------------------

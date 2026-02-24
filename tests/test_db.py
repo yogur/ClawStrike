@@ -9,8 +9,10 @@ import pytest
 from clawstrike.db import (
     ContactRecord,
     get_or_create_contact,
+    increment_interaction,
     insert_audit_event,
     open_db,
+    set_contact_trust_level,
 )
 
 # ---------------------------------------------------------------------------
@@ -157,6 +159,87 @@ async def test_insert_audit_event_writes_row(tmp_path: Path) -> None:
     assert row["event_type"] == "classify"
     assert row["is_first_contact"] == 1
     assert row["decision"] == "pass"
+
+
+# ---------------------------------------------------------------------------
+# increment_interaction — US-013
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_increment_interaction_increments_count(tmp_path: Path) -> None:
+    """increment_interaction raises interaction_count by 1."""
+    async with open_db(tmp_path / "test.db") as conn:
+        await get_or_create_contact(conn, "alice@example.com", "email_body")
+        updated = await increment_interaction(conn, "alice@example.com")
+    assert updated.interaction_count == 2
+
+
+@pytest.mark.asyncio
+async def test_increment_interaction_updates_last_seen(tmp_path: Path) -> None:
+    """increment_interaction updates last_seen to a new timestamp."""
+    db_path = tmp_path / "test.db"
+    async with open_db(db_path) as conn:
+        record, _ = await get_or_create_contact(conn, "bob@example.com", "webhook")
+    original_last_seen = record.last_seen
+
+    async with open_db(db_path) as conn:
+        updated = await increment_interaction(conn, "bob@example.com")
+    # last_seen must be >= original (may be equal if clock resolution is low,
+    # but the field must be updated — the UPDATE always sets it even if equal).
+    assert updated.last_seen >= original_last_seen
+
+
+@pytest.mark.asyncio
+async def test_increment_interaction_returns_updated_record(tmp_path: Path) -> None:
+    """increment_interaction returns a ContactRecord with the new count."""
+    async with open_db(tmp_path / "test.db") as conn:
+        await get_or_create_contact(conn, "carol@example.com", "trusted_group")
+        result = await increment_interaction(conn, "carol@example.com")
+    assert isinstance(result, ContactRecord)
+    assert result.source_id == "carol@example.com"
+    assert result.interaction_count == 2
+
+
+@pytest.mark.asyncio
+async def test_increment_interaction_multiple_times(tmp_path: Path) -> None:
+    """Multiple increment calls accumulate correctly."""
+    async with open_db(tmp_path / "test.db") as conn:
+        await get_or_create_contact(conn, "dave@example.com", "email_body")
+        for _ in range(4):
+            await increment_interaction(conn, "dave@example.com")
+        final = await increment_interaction(conn, "dave@example.com")
+    assert final.interaction_count == 6  # 1 (creation) + 5 increments
+
+
+# ---------------------------------------------------------------------------
+# set_contact_trust_level — US-013
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_contact_trust_level_updates_stored_value(tmp_path: Path) -> None:
+    """set_contact_trust_level persists the new trust_level."""
+    async with open_db(tmp_path / "test.db") as conn:
+        await get_or_create_contact(conn, "eve@example.com", "trusted_group")
+        await set_contact_trust_level(conn, "eve@example.com", "medium")
+        record, _ = await get_or_create_contact(
+            conn, "eve@example.com", "trusted_group"
+        )
+    assert record.trust_level == "medium"
+
+
+@pytest.mark.asyncio
+async def test_set_contact_trust_level_trusted(tmp_path: Path) -> None:
+    """set_contact_trust_level can set trust_level to 'trusted'."""
+    async with open_db(tmp_path / "test.db") as conn:
+        await get_or_create_contact(conn, "frank@example.com", "owner_dm")
+        await set_contact_trust_level(conn, "frank@example.com", "trusted")
+        record, _ = await get_or_create_contact(conn, "frank@example.com", "owner_dm")
+    assert record.trust_level == "trusted"
+
+
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

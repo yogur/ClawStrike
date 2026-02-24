@@ -159,15 +159,15 @@
 
 ---
 
-### US-013: Contact Registry — Interaction Tracking & Auto-Promotion
+### US-013: Contact Registry — Interaction Tracking & Auto-Promotion ✅ DONE
 
 **Description:** As a ClawStrike user, I want contacts to be automatically promoted to the channel's default trust level after repeated safe interactions so that trusted regulars aren't permanently treated as strangers.
 
 **Acceptance Criteria:**
-- [ ] Each non-blocked interaction from a known contact increments `interaction_count` and updates `last_seen`
-- [ ] When `interaction_count` reaches `trust.auto_promote_after` (default: 5) and `trust_level` is `'auto'`, the contact's effective trust is promoted to the channel's default trust level
-- [ ] An audit log entry records the promotion event with `event_type: "trust_update"`
-- [ ] Contacts with a manual override (`'trusted'` or `'blocked'`) are never auto-promoted
+- [x] Each non-blocked interaction from a known contact increments `interaction_count` and updates `last_seen`
+- [x] When `interaction_count` reaches `trust.auto_promote_after` (default: 5) and `trust_level` is `'auto'`, the contact's effective trust is promoted to the channel's default trust level
+- [x] An audit log entry records the promotion event with `event_type: "trust_update"`
+- [x] Contacts with a manual override (`'trusted'` or `'blocked'`) are never auto-promoted
 
 ---
 

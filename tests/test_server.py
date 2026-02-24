@@ -737,3 +737,254 @@ async def test_classify_two_source_ids_each_first_contact(
     )
     assert result_a.structured_content["is_first_contact"] is True
     assert result_b.structured_content["is_first_contact"] is True
+
+
+# ---------------------------------------------------------------------------
+# US-013 — Interaction Tracking & Auto-Promotion (integration)
+# ---------------------------------------------------------------------------
+
+
+async def _get_contact_from_db(db_path: str, source_id: str):
+    """Helper: fetch a ContactRecord directly from the SQLite DB."""
+    from clawstrike.db import get_or_create_contact, open_db
+
+    async with open_db(db_path) as conn:
+        record, _ = await get_or_create_contact(conn, source_id, "email_body")
+    return record
+
+
+async def _get_audit_events(db_path: str, *, event_type: str | None = None):
+    """Helper: fetch all audit events (optionally filtered by event_type)."""
+    from clawstrike.db import open_db
+
+    async with open_db(db_path) as conn:
+        if event_type:
+            async with conn.execute(
+                "SELECT * FROM audit_events WHERE event_type = ?", (event_type,)
+            ) as cur:
+                return await cur.fetchall()
+        async with conn.execute("SELECT * FROM audit_events") as cur:
+            return await cur.fetchall()
+
+
+@pytest.mark.asyncio
+async def test_classify_increments_interaction_on_pass(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Each non-blocked (pass) call for a known contact increments interaction_count."""
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=1.0
+    )
+    srv.init_server(cfg)
+    # First call: creates contact, count=1.
+    await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    # Second call: known contact, pass → count becomes 2.
+    await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    record = await _get_contact_from_db(str(cfg.audit.db_path), "user@example.com")
+    assert record.interaction_count == 2
+
+
+@pytest.mark.asyncio
+async def test_classify_increments_interaction_on_flag(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Flag decisions (non-blocked) also increment interaction_count."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    # First call (first-contact, no increment on creation beyond initial 1).
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=1.0
+    )
+    await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    # Second call with flag score: should still increment.
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_FLAG, label="injection", model="mock-model", latency_ms=1.0
+    )
+    await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    record = await _get_contact_from_db(str(cfg.audit.db_path), "user@example.com")
+    assert record.interaction_count == 2
+
+
+@pytest.mark.asyncio
+async def test_classify_no_increment_on_block(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Block decisions do NOT increment interaction_count."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    # First call: creates contact, count=1.
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=1.0
+    )
+    await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    # Second call: block decision — count must stay at 1.
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_BLOCK, label="injection", model="mock-model", latency_ms=1.0
+    )
+    await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    record = await _get_contact_from_db(str(cfg.audit.db_path), "user@example.com")
+    assert record.interaction_count == 1
+
+
+@pytest.mark.asyncio
+async def test_classify_auto_promote_after_threshold(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """After auto_promote_after (5) non-blocked interactions, trust_level is promoted.
+
+    email_body defaults to LOW trust. After 5 safe interactions, the stored
+    trust_level should change from 'auto' to 'low'.
+    """
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=1.0
+    )
+    srv.init_server(cfg)
+
+    # auto_promote_after default is 5. First call creates with count=1.
+    # 4 more non-blocked calls → count reaches 5 → promote on the 5th call.
+    for _ in range(5):
+        await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    record = await _get_contact_from_db(str(cfg.audit.db_path), "user@example.com")
+    # email_body channel default is LOW → promoted trust_level = 'low'
+    assert record.trust_level == "low"
+
+
+@pytest.mark.asyncio
+async def test_classify_auto_promote_writes_trust_update_audit_event(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Auto-promotion writes a trust_update audit event with the correct fields."""
+    import json
+
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=1.0
+    )
+    srv.init_server(cfg)
+
+    for _ in range(5):
+        await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    events = await _get_audit_events(str(cfg.audit.db_path), event_type="trust_update")
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["source_id"] == "user@example.com"
+    assert ev["channel_type"] == "email_body"
+    details = json.loads(ev["details_json"])
+    assert details["previous_trust"] == "auto"
+    assert details["reason"] == "auto_promote"
+    assert details["interaction_count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_classify_no_auto_promote_before_threshold(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """No promotion occurs before interaction_count reaches auto_promote_after."""
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=1.0
+    )
+    srv.init_server(cfg)
+
+    # 4 calls → count=4 (first creates count=1, then 3 increments → 4).
+    # With auto_promote_after=5, should NOT promote.
+    for _ in range(4):
+        await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    record = await _get_contact_from_db(str(cfg.audit.db_path), "user@example.com")
+    assert record.trust_level == "auto"
+    events = await _get_audit_events(str(cfg.audit.db_path), event_type="trust_update")
+    assert len(events) == 0
+
+
+@pytest.mark.asyncio
+async def test_classify_no_auto_promote_if_manual_trusted(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Contacts with trust_level='trusted' (manual override) are never auto-promoted."""
+    import clawstrike.mcpserver as srv
+    from clawstrike.db import open_db, set_contact_trust_level
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=1.0
+    )
+    srv.init_server(cfg)
+
+    # Register contact and manually set trust_level to 'trusted'.
+    await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    async with open_db(str(cfg.audit.db_path)) as conn:
+        await set_contact_trust_level(conn, "user@example.com", "trusted")
+
+    # Make 4 more calls to exceed auto_promote_after threshold.
+    for _ in range(4):
+        await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    record = await _get_contact_from_db(str(cfg.audit.db_path), "user@example.com")
+    # trust_level should remain 'trusted' (not overwritten by auto-promotion).
+    assert record.trust_level == "trusted"
+    events = await _get_audit_events(str(cfg.audit.db_path), event_type="trust_update")
+    assert len(events) == 0
+
+
+@pytest.mark.asyncio
+async def test_classify_no_auto_promote_if_manual_blocked(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Contacts with trust_level='blocked' (manual override) are never auto-promoted."""
+    import clawstrike.mcpserver as srv
+    from clawstrike.db import open_db, set_contact_trust_level
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=1.0
+    )
+    srv.init_server(cfg)
+
+    # Register contact and manually set trust_level to 'blocked'.
+    await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    async with open_db(str(cfg.audit.db_path)) as conn:
+        await set_contact_trust_level(conn, "user@example.com", "blocked")
+
+    # Make 4 more calls to exceed auto_promote_after threshold.
+    for _ in range(4):
+        await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    record = await _get_contact_from_db(str(cfg.audit.db_path), "user@example.com")
+    assert record.trust_level == "blocked"
+    events = await _get_audit_events(str(cfg.audit.db_path), event_type="trust_update")
+    assert len(events) == 0
+
+
+@pytest.mark.asyncio
+async def test_classify_auto_promote_only_once(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """After promotion, further calls don't produce additional trust_update events."""
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=_SCORE_PASS, label="benign", model="mock-model", latency_ms=1.0
+    )
+    srv.init_server(cfg)
+
+    # 5 calls to trigger promotion, then 3 more.
+    for _ in range(8):
+        await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+
+    events = await _get_audit_events(str(cfg.audit.db_path), event_type="trust_update")
+    # Exactly one trust_update event (from the 5th call).
+    assert len(events) == 1

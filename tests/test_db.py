@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import sqlite3 as _sqlite3
 from pathlib import Path
 
 import pytest
@@ -267,49 +266,14 @@ async def test_insert_audit_event_is_first_contact_false(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# US-023 — Audit Log Schema: new columns and migration
+# US-023 — Audit Log Schema: required columns present in DDL
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_audit_events_schema_has_new_columns(tmp_path: Path) -> None:
+async def test_audit_events_schema_has_required_columns(tmp_path: Path) -> None:
     """open_db creates audit_events with label, raw_input_hash, raw_input_snippet."""
     async with open_db(tmp_path / "test.db") as conn:
-        async with conn.execute("PRAGMA table_info(audit_events)") as cur:
-            rows = await cur.fetchall()
-    col_names = {row[1] for row in rows}
-    assert "label" in col_names
-    assert "raw_input_hash" in col_names
-    assert "raw_input_snippet" in col_names
-
-
-@pytest.mark.asyncio
-async def test_open_db_migrates_old_schema(tmp_path: Path) -> None:
-    """open_db adds missing columns to a DB created without them (migration)."""
-    db_path = tmp_path / "old.db"
-    # Create a DB with the pre-US-023 schema (no new columns).
-    with _sqlite3.connect(str(db_path)) as conn:
-        conn.execute(
-            """
-            CREATE TABLE audit_events (
-                id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp        TIMESTAMP NOT NULL,
-                event_type       TEXT NOT NULL DEFAULT '',
-                session_id       TEXT NOT NULL DEFAULT '',
-                source_id        TEXT NOT NULL DEFAULT '',
-                channel_type     TEXT NOT NULL DEFAULT '',
-                decision         TEXT,
-                score            REAL,
-                is_first_contact INTEGER NOT NULL DEFAULT 0,
-                trust_level      TEXT,
-                details_json     TEXT NOT NULL DEFAULT '{}'
-            )
-            """
-        )
-        conn.commit()
-
-    # open_db should migrate and add the missing columns.
-    async with open_db(db_path) as conn:
         async with conn.execute("PRAGMA table_info(audit_events)") as cur:
             rows = await cur.fetchall()
     col_names = {row[1] for row in rows}

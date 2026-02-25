@@ -433,3 +433,15 @@
   - Typer's `CliRunner.invoke(..., input="y\n")` simulates stdin for `typer.confirm()` prompts — use this in tests for overwrite-confirmation flows
   - Duration filter uses ISO string comparison in SQLite (`timestamp >= ?`) — works correctly because `datetime.now(UTC).isoformat()` and stored timestamps share the same `+00:00` UTC suffix, so lexicographic order equals chronological order
 ---
+
+## [2026-02-26] - Remove migration helpers (db.py cleanup)
+- Removed `_NEW_AUDIT_COLS`, `_apply_migrations()` (async), and `_apply_migrations_sync()` (sync) from `db.py` — the project is pre-release so no existing databases need migration; all columns (`label`, `raw_input_hash`, `raw_input_snippet`) were already present in the `_DDL` `CREATE TABLE` statement
+- Removed the `_apply_migrations` call from `open_db()` and the `_apply_migrations_sync` call from `setup_audit_db()`
+- Removed unused `sqlite3 as _sqlite3` import from `tests/test_db.py`
+- Removed `test_open_db_migrates_old_schema` (migration-specific test, no longer needed)
+- Renamed `test_audit_events_schema_has_new_columns` → `test_audit_events_schema_has_required_columns` to reflect that these are base DDL columns, not migration additions
+- Files changed:
+  - `src/clawstrike/db.py` — removed `_NEW_AUDIT_COLS`, `_apply_migrations`, `_apply_migrations_sync`, and their call-sites; simplified docstrings
+  - `tests/test_db.py` — removed migration import and test; renamed schema column test
+- 276 tests pass (net −1 from removed migration test); ruff check and ruff format clean
+---

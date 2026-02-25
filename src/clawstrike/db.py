@@ -13,7 +13,7 @@ from pathlib import Path
 import aiosqlite
 
 # ---------------------------------------------------------------------------
-# Schema DDL — contacts (US-012) and audit_events (US-023/024)
+# Schema DDL — contacts, action_allowlist, audit_events
 # ---------------------------------------------------------------------------
 
 _DDL = """
@@ -52,42 +52,6 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 """
 
-# Columns added after the original schema that must be applied via ALTER TABLE
-# when opening an existing database that pre-dates their addition.
-_NEW_AUDIT_COLS: list[tuple[str, str]] = [
-    ("label", "TEXT"),
-    ("raw_input_hash", "TEXT"),
-    ("raw_input_snippet", "TEXT"),
-]
-
-# ---------------------------------------------------------------------------
-# Migration helpers
-# ---------------------------------------------------------------------------
-
-
-async def _apply_migrations(conn: aiosqlite.Connection) -> None:
-    """Add any columns missing from audit_events (forward migration only)."""
-    async with conn.execute("PRAGMA table_info(audit_events)") as cur:
-        rows = await cur.fetchall()
-    existing = {row[1] for row in rows}
-    for col_name, col_type in _NEW_AUDIT_COLS:
-        if col_name not in existing:
-            await conn.execute(
-                f"ALTER TABLE audit_events ADD COLUMN {col_name} {col_type}"
-            )
-    await conn.commit()
-
-
-def _apply_migrations_sync(conn: sqlite3.Connection) -> None:
-    """Sync version of _apply_migrations for use in setup_audit_db."""
-    cursor = conn.execute("PRAGMA table_info(audit_events)")
-    existing = {row[1] for row in cursor.fetchall()}
-    for col_name, col_type in _NEW_AUDIT_COLS:
-        if col_name not in existing:
-            conn.execute(f"ALTER TABLE audit_events ADD COLUMN {col_name} {col_type}")
-    conn.commit()
-
-
 # ---------------------------------------------------------------------------
 # Async connection manager
 # ---------------------------------------------------------------------------
@@ -99,8 +63,6 @@ async def open_db(path: str | Path) -> AsyncIterator[aiosqlite.Connection]:
 
     Creates parent directories automatically. Schema creation is idempotent
     (``CREATE TABLE IF NOT EXISTS``), so this can be called on every request.
-    Applies forward migrations to add any columns that did not exist in
-    earlier schema versions.
     """
     db_path = Path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,7 +70,6 @@ async def open_db(path: str | Path) -> AsyncIterator[aiosqlite.Connection]:
         conn.row_factory = aiosqlite.Row
         await conn.executescript(_DDL)
         await conn.commit()
-        await _apply_migrations(conn)
         yield conn
 
 
@@ -121,9 +82,8 @@ def setup_audit_db(path: str | Path) -> tuple[bool, int]:
     """Synchronously initialize the audit database and return status.
 
     Uses the stdlib ``sqlite3`` module so it can be called from synchronous
-    startup code without an event loop.  Creates parent directories, creates
-    tables if they don't exist, and runs forward migrations on existing
-    databases.
+    startup code without an event loop.  Creates parent directories and
+    creates tables if they don't exist.
 
     Returns:
         ``(was_created, event_count)`` where *was_created* is ``True`` when
@@ -135,7 +95,6 @@ def setup_audit_db(path: str | Path) -> tuple[bool, int]:
     with sqlite3.connect(str(db_path)) as conn:
         conn.executescript(_DDL)
         conn.commit()
-        _apply_migrations_sync(conn)
         cursor = conn.execute("SELECT COUNT(*) FROM audit_events")
         event_count: int = cursor.fetchone()[0]
     return was_created, event_count

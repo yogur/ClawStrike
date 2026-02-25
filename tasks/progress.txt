@@ -24,6 +24,9 @@
 - Audit DB has two init paths: `setup_audit_db(path)` (sync, stdlib sqlite3) for CLI startup; `open_db(path)` (async, aiosqlite) for request-time. Both run `_apply_migrations` to add any missing columns from `_NEW_AUDIT_COLS` list.
 - `raw_input_hash` (SHA-256) always written to classify audit event; `raw_input_snippet` only when `log_raw_input=True`. `elevated_scrutiny` stored as bool in `details_json`, derived from `decision == "flag"` at write time.
 - Content-source mismatch (US-016): `_mismatch_sessions` global in `mcpserver.py` works like `_elevated_sessions`. Mismatch condition: `trust_level in (HIGH, MEDIUM) AND score >= base_flag` — fires independently of the effective decision (pass/flag/block). In `gate`, mismatch forces effective trust to LOW (applied BEFORE elevated_scrutiny downgrade). Teardown must clear both sets.
+- Allowlist check in `gate` runs BEFORE the decision matrix; if matched, `recommendation` is forced to `"allow"`. Response and audit event include `allowlisted: bool`, `allowlist_rule_id`, and `allowlist_source_scope`.
+- `confirm` tool uses `_DECISION_MAP` for case-insensitive normalization. `always_allow`/`always_allow_global` create allowlist rules only when `cfg.action_gating.allowlist_learning` is `True`; otherwise silently downgraded to `approve`.
+- New CLI commands follow the same pattern: `--json` input, `init_server`, `asyncio.run(srv.<tool>(**params))`, `json.dumps` output.
 
 ---
 
@@ -241,7 +244,7 @@
   - `_load_cfg_or_defaults(path)` helper in `cli.py` centralizes the fallback logic.
   - `health` CLI command is config-only — no `init_server` call, no model load.
   - Updated `clawstrike.example.yaml`: `mcp.transport` → `mcp.enabled: true`
-  - Added US-019 (CLI Integration Mode); updated US-002, US-003 in user stories
+  - Added US-041 (CLI Integration Mode); updated US-002, US-003 in user stories
   - Updated PRD Section 3.1 (dual invocation table) and Section 7 (config reference)
 - Files changed:
   - `src/clawstrike/config.py` — removed `TransportMode`; `McpConfig.enabled`; `ClassifierConfig.model` default; `ClawStrikeConfig.classifier` default_factory; `_RootConfig.clawstrike` default_factory
@@ -249,7 +252,7 @@
   - `clawstrike.example.yaml` — replaced `transport: "stdio"` with `enabled: true`
   - `tests/test_config.py` — removed `TransportMode` import; updated 3 tests that expected errors for missing classifier (now use defaults); updated `test_defaults_mode_and_mcp`; added 4 new tests for `mcp.enabled`, old `transport` key warning, `ClawStrikeConfig()` no-args
   - `tests/test_cli.py` — updated `test_start_invalid_config_exits_1` (needed an actually invalid value); added 10 new tests covering no-config start, mcp-disabled start, `health`, `classify`, `gate`
-  - `tasks/clawstrike-user-stories.md` — updated US-002/US-003; added US-019
+  - `tasks/clawstrike-user-stories.md` — updated US-002/US-003; added US-041
   - `tasks/clawstrike-prd.md` — Section 3.1 dual-invocation table; Section 7 mcp.enabled
 - All 192 tests pass; `ruff check` and `ruff format` clean
 - **Learnings for future iterations:**
@@ -366,4 +369,47 @@
   - Gate downgrade order matters: apply mismatch (→ LOW) BEFORE elevated_scrutiny (`downgrade_trust`). Wrong order would give different results for stacked sessions.
   - The `_make_cfg_with_trust()` helper already present in test_server.py is ideal for US-016 tests — reuse it.
   - Always seed a contact (benign classify call) before testing trust-sensitive behavior — otherwise first-contact override masks the intended trust level.
+---
+
+## [2026-02-26] - US-019 + US-020
+
+### What was implemented
+
+**US-019 (User Confirmation Prompt for Gated Actions):**
+- `confirm` MCP tool in `mcpserver.py` — stateless tool that records the user's confirmation decision for gated actions
+- Decision normalization via `_DECISION_MAP`: accepts `approve`/`a`, `deny`/`d`, `always_allow`/`aa`, `always_allow_global`/`aag` (case-insensitive, whitespace-stripped)
+- Invalid decisions raise `RuntimeError` (surfaced as `ToolError` via FastMCP)
+- Returns `{status, decision (allow/deny), user_decision (normalized), allowlist_created, allowlist_rule_id, ...}`
+- Writes `action_confirm` audit event for every decision
+- CLI equivalent: `clawstrike confirm --json '{...}'`
+
+**US-020 (Action Allowlist Creation from Approval):**
+- `action_allowlist` table in `db.py`: `id`, `action_type`, `action_pattern` (always NULL for now), `source_scope`, `created_at`, `created_by`
+- `check_allowlist(conn, action_type, source_id)` — matches exact action_type AND (global OR source_id match)
+- `insert_allowlist_rule(conn, action_type, source_scope, created_by)` — returns the new row ID
+- In `gate` tool: allowlist check runs before the decision matrix; if matched, recommendation forced to `"allow"`, response includes `allowlisted: True` and `allowlist_rule_id`
+- In `confirm` tool: `always_allow` creates source-scoped rule, `always_allow_global` creates global rule; only when `cfg.action_gating.allowlist_learning` is `True` (silently downgrades to `approve` when `False`)
+- Writes `allowlist_creation` audit event when a rule is created
+- Gate audit event `details_json` now includes `allowlisted`, `allowlist_rule_id`, `allowlist_source_scope`
+- Updated MCP server instructions to mention the confirm tool
+
+### Files changed
+
+- **Modified:** `src/clawstrike/db.py` — added `action_allowlist` table DDL, `check_allowlist()`, `insert_allowlist_rule()`
+- **Modified:** `src/clawstrike/mcpserver.py` — added `confirm` tool, `_DECISION_MAP`, allowlist bypass in `gate`, updated MCP instructions, new DB imports
+- **Modified:** `src/clawstrike/cli.py` — added `confirm` CLI command
+- **Modified:** `tests/test_db.py` — 5 new tests for allowlist CRUD
+- **Modified:** `tests/test_server.py` — 22 new tests for confirm tool, allowlist creation, allowlist bypass in gate, E2E flow
+- **Modified:** `tests/test_cli.py` — 2 new tests for confirm CLI command
+- **Modified:** `CLAUDE.md` — added allowlist and confirm tool patterns
+- **Modified:** `tasks/clawstrike-user-stories.md` — marked US-019 and US-020 as DONE
+- **Modified:** `tasks/progress.txt` — this entry
+
+### Test count: 233 → 262 (29 new tests)
+
+### Learnings for future iterations:
+- The `confirm` tool is fully stateless — it does not look up prior `gate` calls. The skill re-sends the full action context. This simplifies implementation (no session state for pending confirmations) at the cost of requiring the skill to relay all context.
+- `always_allow`/`always_allow_global` with `allowlist_learning: false` silently downgrade to `approve` — no error, no rule. The `user_decision` in the response reflects the downgraded `"approve"`, not the original `"always_allow"`. This lets the skill know no rule was created.
+- Allowlist check in `gate` uses a separate `open_db` call before the trust resolution pipeline. This keeps the allowlist check isolated and doesn't interfere with the existing trust/downgrade logic.
+- The E2E test pattern (gate→confirm→gate) is effective for verifying the full flow. Use `_make_cfg_with_trust` to set up channels that produce `prompt_user` for the initial gate call.
 ---

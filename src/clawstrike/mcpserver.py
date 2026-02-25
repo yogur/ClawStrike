@@ -12,8 +12,10 @@ from fastmcp import FastMCP
 from clawstrike.classifier import BaseClassifier, ClassifierResult, create_classifier
 from clawstrike.config import ClawStrikeConfig, TrustLevel
 from clawstrike.db import (
+    check_allowlist,
     get_or_create_contact,
     increment_interaction,
+    insert_allowlist_rule,
     insert_audit_event,
     open_db,
     set_contact_trust_level,
@@ -34,7 +36,9 @@ mcp = FastMCP(
         "Security guardrails for OpenClaw. "
         "Call 'classify' on every inbound message before acting on it. "
         "Call 'gate' before executing any planned action. "
-        "Comply with all block and prompt_user recommendations."
+        "Comply with all block and prompt_user recommendations. "
+        "When 'gate' returns recommendation 'prompt_user', ask the owner for "
+        "confirmation and then call 'confirm' with the user's decision."
     ),
 )
 
@@ -298,6 +302,18 @@ async def gate(
     cfg = _require_config()
     base_trust_level = resolve_trust_level(channel_type, cfg.trust)
 
+    # US-020: check allowlist before applying the full gating pipeline.
+    allowlisted = False
+    allowlist_rule_id = None
+    allowlist_source_scope = None
+    if _db_path:
+        async with open_db(_db_path) as conn:
+            rule = await check_allowlist(conn, action_type, source_id)
+        if rule is not None:
+            allowlisted = True
+            allowlist_rule_id = rule["id"]
+            allowlist_source_scope = rule["source_scope"]
+
     # US-016: force effective trust to LOW when a content-source mismatch was
     # detected in a prior classify call for this session.  Applied before the
     # elevated-scrutiny downgrade so both stack correctly.
@@ -315,6 +331,10 @@ async def gate(
 
     # US-018: apply the gating decision matrix using effective (post-downgrade) trust.
     recommendation = apply_decision_matrix(risk_level, effective_trust_level)
+
+    # US-020: allowlisted actions override recommendation to "allow".
+    if allowlisted:
+        recommendation = "allow"
 
     # Write audit event for each gating decision (US-018 AC2).
     # Record both the original and effective trust tiers (US-022 AC3).
@@ -336,6 +356,9 @@ async def gate(
                     "original_trust_level": base_trust_level.value,
                     "elevated_scrutiny": elevated,
                     "content_source_mismatch": mismatch,
+                    "allowlisted": allowlisted,
+                    "allowlist_rule_id": allowlist_rule_id,
+                    "allowlist_source_scope": allowlist_source_scope,
                 },
             )
 
@@ -347,10 +370,132 @@ async def gate(
         "reason": reason,
         "elevated_scrutiny": elevated,
         "content_source_mismatch": mismatch,
+        "allowlisted": allowlisted,
+        "allowlist_rule_id": allowlist_rule_id,
         "action_type": action_type,
         "session_id": session_id,
         "source_id": source_id,
         "channel_type": channel_type,
+    }
+
+
+# Decision normalization map for the confirm tool (US-019).
+_DECISION_MAP: dict[str, str] = {
+    "approve": "approve",
+    "a": "approve",
+    "deny": "deny",
+    "d": "deny",
+    "always_allow": "always_allow",
+    "aa": "always_allow",
+    "always_allow_global": "always_allow_global",
+    "aag": "always_allow_global",
+}
+
+
+@mcp.tool
+async def confirm(
+    action_type: str,
+    action_description: str,
+    session_id: str,
+    source_id: str,
+    channel_type: str,
+    decision: str,
+) -> dict[str, Any]:
+    """Record the user's confirmation decision for a gated action.
+
+    Called by the skill after presenting a ``prompt_user`` recommendation to
+    the owner and collecting their response.  This is a stateless tool — the
+    skill re-sends the full action context from the original ``gate`` call.
+
+    Args:
+        action_type: Machine-readable action type from the risk taxonomy.
+        action_description: Human-readable description of the planned action.
+        session_id: UUID identifying the current agent session.
+        source_id: Normalized identifier for the originating source.
+        channel_type: Channel through which the triggering message arrived.
+        decision: The user's decision — one of ``approve`` / ``a``,
+                  ``deny`` / ``d``, ``always_allow`` / ``aa``,
+                  ``always_allow_global`` / ``aag`` (case-insensitive).
+
+    Returns:
+        A dict with ``status``, ``decision`` (allow/deny),
+        ``user_decision`` (normalized full form), ``allowlist_created``,
+        and ``allowlist_rule_id``.
+    """
+    cfg = _require_config()
+
+    # Normalize decision.
+    normalized = _DECISION_MAP.get(decision.strip().lower())
+    if normalized is None:
+        valid = ", ".join(sorted(_DECISION_MAP.keys()))
+        raise RuntimeError(f"Invalid decision {decision!r}. Valid values: {valid}")
+
+    # Determine the high-level outcome: allow or deny.
+    outcome = "deny" if normalized == "deny" else "allow"
+
+    # US-020: create allowlist rule for always_allow / always_allow_global
+    # when allowlist_learning is enabled.
+    allowlist_created = False
+    allowlist_rule_id: int | None = None
+
+    if normalized in ("always_allow", "always_allow_global"):
+        if cfg.action_gating.allowlist_learning:
+            scope = "global" if normalized == "always_allow_global" else source_id
+            if _db_path:
+                async with open_db(_db_path) as conn:
+                    allowlist_rule_id = await insert_allowlist_rule(
+                        conn, action_type, scope
+                    )
+                    allowlist_created = True
+                    # Write allowlist_creation audit event.
+                    await insert_audit_event(
+                        conn,
+                        event_type="allowlist_creation",
+                        session_id=session_id,
+                        source_id=source_id,
+                        channel_type=channel_type,
+                        decision=outcome,
+                        details={
+                            "action_type": action_type,
+                            "action_description": action_description,
+                            "source_scope": scope,
+                            "allowlist_rule_id": allowlist_rule_id,
+                            "user_decision": normalized,
+                        },
+                    )
+        else:
+            # Downgrade to simple approve — no rule created.
+            normalized = "approve"
+
+    # Write action_confirm audit event.
+    if _db_path:
+        async with open_db(_db_path) as conn:
+            await insert_audit_event(
+                conn,
+                event_type="action_confirm",
+                session_id=session_id,
+                source_id=source_id,
+                channel_type=channel_type,
+                decision=outcome,
+                details={
+                    "action_type": action_type,
+                    "action_description": action_description,
+                    "user_decision": normalized,
+                    "allowlist_created": allowlist_created,
+                    "allowlist_rule_id": allowlist_rule_id,
+                },
+            )
+
+    return {
+        "status": "recorded",
+        "decision": outcome,
+        "user_decision": normalized,
+        "action_type": action_type,
+        "session_id": session_id,
+        "source_id": source_id,
+        "channel_type": channel_type,
+        "allowlist_created": allowlist_created,
+        "allowlist_rule_id": allowlist_rule_id,
     }
 
 

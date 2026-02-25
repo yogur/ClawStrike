@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS contacts (
     last_seen         TIMESTAMP NOT NULL,
     interaction_count INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS action_allowlist (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_type    TEXT NOT NULL,
+    action_pattern TEXT,
+    source_scope   TEXT NOT NULL,
+    created_at     TIMESTAMP NOT NULL,
+    created_by     TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp         TIMESTAMP NOT NULL,
@@ -243,6 +251,62 @@ async def set_contact_trust_level(
         (trust_level, source_id),
     )
     await conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Action Allowlist (US-020)
+# ---------------------------------------------------------------------------
+
+
+async def check_allowlist(
+    conn: aiosqlite.Connection,
+    action_type: str,
+    source_id: str,
+) -> dict | None:
+    """Check if an action is allowlisted for the given source.
+
+    Matches on exact ``action_type`` AND (``source_scope = 'global'`` OR
+    ``source_scope = source_id``).  Returns the first matching row as a dict
+    (with ``id``, ``action_type``, ``source_scope``, etc.) or ``None``.
+    """
+    async with conn.execute(
+        "SELECT id, action_type, action_pattern, source_scope, created_at, "
+        "created_by FROM action_allowlist "
+        "WHERE action_type = ? AND (source_scope = 'global' OR source_scope = ?) "
+        "LIMIT 1",
+        (action_type, source_id),
+    ) as cursor:
+        row = await cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "id": row["id"],
+        "action_type": row["action_type"],
+        "action_pattern": row["action_pattern"],
+        "source_scope": row["source_scope"],
+        "created_at": row["created_at"],
+        "created_by": row["created_by"],
+    }
+
+
+async def insert_allowlist_rule(
+    conn: aiosqlite.Connection,
+    action_type: str,
+    source_scope: str,
+    created_by: str = "owner",
+) -> int:
+    """Insert a new allowlist rule and return its row ID."""
+    now = datetime.now(UTC).isoformat()
+    cursor = await conn.execute(
+        "INSERT INTO action_allowlist "
+        "(action_type, action_pattern, source_scope, created_at, created_by) "
+        "VALUES (?, NULL, ?, ?, ?)",
+        (action_type, source_scope, now, created_by),
+    )
+    await conn.commit()
+    return cursor.lastrowid
 
 
 # ---------------------------------------------------------------------------

@@ -183,6 +183,34 @@ def gate(
 
 
 @app.command()
+def confirm(
+    json_input: Annotated[
+        str, typer.Option("--json", help="JSON-encoded confirm parameters.")
+    ],
+    config: _ConfigOption = _DEFAULT_CONFIG_PATH,
+) -> None:
+    """Record a user confirmation decision for a gated action. Accepts and outputs JSON."""
+    cfg = _load_cfg_or_defaults(config)
+
+    try:
+        params = json.loads(json_input)
+    except json.JSONDecodeError as exc:
+        typer.echo(f"Invalid JSON: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    import clawstrike.mcpserver as srv
+
+    try:
+        srv.init_server(cfg)
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    result = asyncio.run(srv.confirm(**params))
+    typer.echo(json.dumps(result))
+
+
+@app.command()
 def health(
     config: _ConfigOption = _DEFAULT_CONFIG_PATH,
 ) -> None:

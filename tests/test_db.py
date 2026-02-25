@@ -10,8 +10,10 @@ import pytest
 
 from clawstrike.db import (
     ContactRecord,
+    check_allowlist,
     get_or_create_contact,
     increment_interaction,
+    insert_allowlist_rule,
     insert_audit_event,
     open_db,
     set_contact_trust_level,
@@ -413,3 +415,64 @@ def test_setup_audit_db_idempotent(tmp_path: Path) -> None:
     was_created, event_count = setup_audit_db(db_path)
     assert was_created is False
     assert event_count == 0
+
+
+# ---------------------------------------------------------------------------
+# US-020 — action_allowlist: check_allowlist and insert_allowlist_rule
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_allowlist_returns_none_when_empty(tmp_path: Path) -> None:
+    """check_allowlist returns None when no rules exist."""
+    async with open_db(tmp_path / "test.db") as conn:
+        result = await check_allowlist(conn, "send_email", "user@example.com")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_insert_and_check_allowlist_exact_match(tmp_path: Path) -> None:
+    """insert_allowlist_rule + check_allowlist returns the matching rule."""
+    async with open_db(tmp_path / "test.db") as conn:
+        rule_id = await insert_allowlist_rule(conn, "send_email", "user@example.com")
+        result = await check_allowlist(conn, "send_email", "user@example.com")
+    assert result is not None
+    assert result["id"] == rule_id
+    assert result["action_type"] == "send_email"
+    assert result["source_scope"] == "user@example.com"
+    assert result["created_by"] == "owner"
+
+
+@pytest.mark.asyncio
+async def test_check_allowlist_global_scope_matches_any_source(
+    tmp_path: Path,
+) -> None:
+    """A global-scope rule matches any source_id."""
+    async with open_db(tmp_path / "test.db") as conn:
+        await insert_allowlist_rule(conn, "send_email", "global")
+        result = await check_allowlist(conn, "send_email", "anyone@example.com")
+    assert result is not None
+    assert result["source_scope"] == "global"
+
+
+@pytest.mark.asyncio
+async def test_check_allowlist_source_scoped_does_not_match_other(
+    tmp_path: Path,
+) -> None:
+    """A source-scoped rule does not match a different source_id."""
+    async with open_db(tmp_path / "test.db") as conn:
+        await insert_allowlist_rule(conn, "send_email", "user@example.com")
+        result = await check_allowlist(conn, "send_email", "other@example.com")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_allowlist_table_created_by_open_db(tmp_path: Path) -> None:
+    """open_db creates the action_allowlist table."""
+    async with open_db(tmp_path / "test.db") as conn:
+        async with conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='action_allowlist'"
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None

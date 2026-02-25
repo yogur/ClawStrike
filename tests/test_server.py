@@ -2370,3 +2370,460 @@ async def test_init_server_resets_mismatch_sessions(
     # Re-init should clear it.
     srv.init_server(cfg)
     assert len(srv._mismatch_sessions) == 0
+
+
+# ---------------------------------------------------------------------------
+# US-019 — confirm tool
+# ---------------------------------------------------------------------------
+
+_CONFIRM_BASE = {
+    "action_type": "send_email",
+    "action_description": "send email to team@company.com",
+    "session_id": "confirm-sess",
+    "source_id": "user@example.com",
+    "channel_type": "email_body",
+}
+
+
+@pytest.mark.asyncio
+async def test_confirm_approve_returns_recorded(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm with decision='approve' returns status=recorded, decision=allow."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool(
+        "confirm", {**_CONFIRM_BASE, "decision": "approve"}
+    )
+    data = result.structured_content
+    assert data["status"] == "recorded"
+    assert data["decision"] == "allow"
+    assert data["user_decision"] == "approve"
+    assert data["allowlist_created"] is False
+    assert data["allowlist_rule_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_deny_returns_deny(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm with decision='deny' returns decision=deny."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "deny"})
+    data = result.structured_content
+    assert data["decision"] == "deny"
+    assert data["user_decision"] == "deny"
+
+
+@pytest.mark.asyncio
+async def test_confirm_short_aliases(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm accepts short aliases: 'a' for approve, 'd' for deny."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+
+    r1 = await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "a"})
+    assert r1.structured_content["user_decision"] == "approve"
+
+    r2 = await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "d"})
+    assert r2.structured_content["user_decision"] == "deny"
+
+
+@pytest.mark.asyncio
+async def test_confirm_case_insensitive(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm normalizes decision case-insensitively."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool(
+        "confirm", {**_CONFIRM_BASE, "decision": " APPROVE "}
+    )
+    assert result.structured_content["user_decision"] == "approve"
+
+
+@pytest.mark.asyncio
+async def test_confirm_invalid_decision_raises(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm with an invalid decision raises ToolError."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    with pytest.raises(ToolError, match="Invalid decision"):
+        await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "maybe"})
+
+
+@pytest.mark.asyncio
+async def test_confirm_writes_action_confirm_audit(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm writes an action_confirm audit event."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "approve"})
+
+    events = await _get_audit_events(
+        str(cfg.audit.db_path), event_type="action_confirm"
+    )
+    assert len(events) == 1
+    assert events[0]["decision"] == "allow"
+    import json
+
+    details = json.loads(events[0]["details_json"])
+    assert details["user_decision"] == "approve"
+    assert details["allowlist_created"] is False
+
+
+@pytest.mark.asyncio
+async def test_confirm_deny_writes_deny_audit(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm deny writes decision=deny in audit."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "deny"})
+
+    events = await _get_audit_events(
+        str(cfg.audit.db_path), event_type="action_confirm"
+    )
+    assert len(events) == 1
+    assert events[0]["decision"] == "deny"
+
+
+# ---------------------------------------------------------------------------
+# US-020 — allowlist creation via confirm
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_confirm_always_allow_creates_allowlist_rule(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm with always_allow creates an allowlist rule scoped to source_id."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool(
+        "confirm", {**_CONFIRM_BASE, "decision": "always_allow"}
+    )
+    data = result.structured_content
+    assert data["allowlist_created"] is True
+    assert data["allowlist_rule_id"] is not None
+    assert data["user_decision"] == "always_allow"
+
+
+@pytest.mark.asyncio
+async def test_confirm_always_allow_global_creates_global_rule(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm with always_allow_global creates a rule with source_scope='global'."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "aag"})
+    data = result.structured_content
+    assert data["allowlist_created"] is True
+    assert data["user_decision"] == "always_allow_global"
+
+    # Verify the rule has global scope.
+    from clawstrike.db import check_allowlist, open_db
+
+    async with open_db(str(cfg.audit.db_path)) as conn:
+        rule = await check_allowlist(conn, "send_email", "any-source")
+    assert rule is not None
+    assert rule["source_scope"] == "global"
+
+
+@pytest.mark.asyncio
+async def test_confirm_always_allow_writes_allowlist_creation_audit(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm always_allow writes an allowlist_creation audit event."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "always_allow"})
+
+    events = await _get_audit_events(
+        str(cfg.audit.db_path), event_type="allowlist_creation"
+    )
+    assert len(events) == 1
+    import json
+
+    details = json.loads(events[0]["details_json"])
+    assert details["action_type"] == "send_email"
+    assert details["source_scope"] == "user@example.com"
+    assert details["allowlist_rule_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_confirm_always_allow_disabled_downgrades_to_approve(
+    tmp_path: Path, reset_server_config: MagicMock
+) -> None:
+    """When allowlist_learning=false, always_allow is downgraded to approve."""
+    import clawstrike.mcpserver as srv
+
+    data = minimal_config(
+        {
+            "audit": {"db_path": str(tmp_path / "test.db")},
+            "action_gating": {"allowlist_learning": False},
+        }
+    )
+    cfg = load_config(write_yaml(tmp_path, data))
+    srv.init_server(cfg)
+
+    result = await srv.mcp.call_tool(
+        "confirm", {**_CONFIRM_BASE, "decision": "always_allow"}
+    )
+    data = result.structured_content
+    assert data["allowlist_created"] is False
+    assert data["allowlist_rule_id"] is None
+    assert data["user_decision"] == "approve"
+
+
+@pytest.mark.asyncio
+async def test_confirm_aa_short_alias(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """confirm accepts 'aa' as shorthand for always_allow."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "aa"})
+    data = result.structured_content
+    assert data["user_decision"] == "always_allow"
+    assert data["allowlist_created"] is True
+
+
+# ---------------------------------------------------------------------------
+# US-020 — allowlist bypass in gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gate_allowlisted_action_returns_allow(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """After always_allow, subsequent gate calls for the same action return allow."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+
+    # Create the allowlist rule via confirm.
+    await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "always_allow"})
+
+    # Gate the same action — should be auto-allowed.
+    gate_result = await srv.mcp.call_tool(
+        "gate",
+        {
+            "action_description": "send email to team@company.com",
+            "action_type": "send_email",
+            "session_id": "confirm-sess",
+            "source_id": "user@example.com",
+            "channel_type": "email_body",
+        },
+    )
+    g = gate_result.structured_content
+    assert g["recommendation"] == "allow"
+    assert g["allowlisted"] is True
+    assert g["allowlist_rule_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_gate_no_allowlist_returns_false(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Without an allowlist rule, gate returns allowlisted=False."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+    result = await srv.mcp.call_tool(
+        "gate",
+        {
+            "action_description": "read file",
+            "action_type": "file_read",
+            "session_id": "sess-1",
+            "source_id": "user@example.com",
+            "channel_type": "email_body",
+        },
+    )
+    data = result.structured_content
+    assert data["allowlisted"] is False
+    assert data["allowlist_rule_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_gate_global_allowlist_matches_any_source(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """A global allowlist rule matches any source_id."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+
+    # Create a global rule.
+    await srv.mcp.call_tool(
+        "confirm", {**_CONFIRM_BASE, "decision": "always_allow_global"}
+    )
+
+    # Gate from a DIFFERENT source_id.
+    gate_result = await srv.mcp.call_tool(
+        "gate",
+        {
+            "action_description": "send email",
+            "action_type": "send_email",
+            "session_id": "other-sess",
+            "source_id": "other@example.com",
+            "channel_type": "email_body",
+        },
+    )
+    g = gate_result.structured_content
+    assert g["recommendation"] == "allow"
+    assert g["allowlisted"] is True
+
+
+@pytest.mark.asyncio
+async def test_gate_source_scoped_rule_does_not_match_other_source(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """A source-scoped allowlist rule does not match a different source_id."""
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+
+    # Create a source-scoped rule for user@example.com.
+    await srv.mcp.call_tool("confirm", {**_CONFIRM_BASE, "decision": "always_allow"})
+
+    # Gate from a different source — should NOT be allowlisted.
+    gate_result = await srv.mcp.call_tool(
+        "gate",
+        {
+            "action_description": "send email",
+            "action_type": "send_email",
+            "session_id": "other-sess",
+            "source_id": "other@example.com",
+            "channel_type": "email_body",
+        },
+    )
+    g = gate_result.structured_content
+    assert g["allowlisted"] is False
+
+
+@pytest.mark.asyncio
+async def test_gate_allowlist_audit_includes_rule_id(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Auto-allowed gate audit event includes allowlist_rule_id in details."""
+    import json
+
+    import clawstrike.mcpserver as srv
+
+    srv.init_server(cfg)
+
+    # Create allowlist rule.
+    confirm_result = await srv.mcp.call_tool(
+        "confirm", {**_CONFIRM_BASE, "decision": "always_allow"}
+    )
+    rule_id = confirm_result.structured_content["allowlist_rule_id"]
+
+    # Gate the action.
+    await srv.mcp.call_tool(
+        "gate",
+        {
+            "action_description": "send email",
+            "action_type": "send_email",
+            "session_id": "confirm-sess",
+            "source_id": "user@example.com",
+            "channel_type": "email_body",
+        },
+    )
+
+    events = await _get_audit_events(str(cfg.audit.db_path), event_type="action_gate")
+    assert len(events) >= 1
+    details = json.loads(events[-1]["details_json"])
+    assert details["allowlisted"] is True
+    assert details["allowlist_rule_id"] == rule_id
+
+
+# ---------------------------------------------------------------------------
+# US-019/020 — E2E: gate→confirm→gate flow
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_e2e_gate_prompt_user_then_always_allow_then_gate_allow(
+    tmp_path: Path, reset_server_config: MagicMock
+) -> None:
+    """Full E2E: gate returns prompt_user → confirm always_allow → gate returns allow."""
+    import json
+
+    import clawstrike.mcpserver as srv
+
+    # Use a config where send_email from medium trust → prompt_user.
+    cfg = _make_cfg_with_trust(tmp_path, "trusted_group", "medium")
+    srv.init_server(cfg)
+
+    # 1. Gate returns prompt_user for send_email from medium trust.
+    g1 = await srv.mcp.call_tool(
+        "gate",
+        {
+            "action_description": "send email to team",
+            "action_type": "send_email",
+            "session_id": "e2e-sess",
+            "source_id": "user@example.com",
+            "channel_type": "trusted_group",
+        },
+    )
+    assert g1.structured_content["recommendation"] == "prompt_user"
+
+    # 2. User confirms with always_allow.
+    c = await srv.mcp.call_tool(
+        "confirm",
+        {
+            "action_type": "send_email",
+            "action_description": "send email to team",
+            "session_id": "e2e-sess",
+            "source_id": "user@example.com",
+            "channel_type": "trusted_group",
+            "decision": "always_allow",
+        },
+    )
+    assert c.structured_content["allowlist_created"] is True
+
+    # 3. Subsequent gate returns allow with allowlisted=True.
+    g2 = await srv.mcp.call_tool(
+        "gate",
+        {
+            "action_description": "send email to team",
+            "action_type": "send_email",
+            "session_id": "e2e-sess",
+            "source_id": "user@example.com",
+            "channel_type": "trusted_group",
+        },
+    )
+    g2_data = g2.structured_content
+    assert g2_data["recommendation"] == "allow"
+    assert g2_data["allowlisted"] is True
+
+    # 4. Audit trail should contain:
+    # action_gate (prompt_user), action_confirm, allowlist_creation, action_gate (allow)
+    all_events = await _get_audit_events(str(cfg.audit.db_path))
+    event_types = [e["event_type"] for e in all_events]
+    assert "action_gate" in event_types
+    assert "action_confirm" in event_types
+    assert "allowlist_creation" in event_types
+
+    # Check auto-allowed gate event has allowlist info.
+    gate_events = [e for e in all_events if e["event_type"] == "action_gate"]
+    last_gate = gate_events[-1]
+    details = json.loads(last_gate["details_json"])
+    assert details["allowlisted"] is True

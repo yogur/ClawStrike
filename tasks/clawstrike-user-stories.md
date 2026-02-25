@@ -52,7 +52,7 @@
 
 ---
 
-### US-019: CLI Integration Mode [DONE]
+### US-041: CLI Integration Mode [DONE]
 
 **Description:** As a ClawStrike user deploying with OpenClaw or another shell-execution agent, I want to call `clawstrike classify` and `clawstrike gate` as one-shot JSON commands so that I get classification and gating without needing MCP support in my agent.
 
@@ -255,36 +255,36 @@ Note: should not be possible by default unless config file exists and allows thi
 
 ---
 
-### US-019: User Confirmation Prompt for Gated Actions
+### US-019: User Confirmation Prompt for Gated Actions ✅ DONE
 
 **Description:** As a ClawStrike user, I want to receive a confirmation prompt when the system recommends user approval so that I stay in control of risky actions.
 
 **Mechanism:** The `confirm` MCP tool (and `clawstrike confirm --json` CLI equivalent) records the user's decision. It is a stateless tool — the skill re-sends the full action context from the original `gate` call along with the user's decision. The skill is responsible for presenting the prompt to the user and relaying their response to `confirm`.
 
 **Acceptance Criteria:**
-- [ ] The MCP server exposes a `confirm` tool that accepts `action_type`, `action_description`, `session_id`, `source_id`, `channel_type`, and `decision` parameters
-- [ ] The `decision` parameter accepts: `"approve"` / `"a"`, `"deny"` / `"d"`, `"always_allow"` / `"aa"`, `"always_allow_global"` / `"aag"` (case-insensitive)
-- [ ] Invalid `decision` values return a `ToolError` naming the valid options
-- [ ] The tool returns `{"status": "recorded", "decision": "allow"|"deny", "user_decision": "<normalized>", "allowlist_created": bool, "allowlist_rule_id": int|null, ...}`
+- [x] The MCP server exposes a `confirm` tool that accepts `action_type`, `action_description`, `session_id`, `source_id`, `channel_type`, and `decision` parameters
+- [x] The `decision` parameter accepts: `"approve"` / `"a"`, `"deny"` / `"d"`, `"always_allow"` / `"aa"`, `"always_allow_global"` / `"aag"` (case-insensitive)
+- [x] Invalid `decision` values return a `ToolError` naming the valid options
+- [x] The tool returns `{"status": "recorded", "decision": "allow"|"deny", "user_decision": "<normalized>", "allowlist_created": bool, "allowlist_rule_id": int|null, ...}`
 - [ ] When the `gate` MCP tool returns `recommendation: "prompt_user"`, the ClawStrike skill instructs the LLM to ask the owner for confirmation before proceeding
 - [ ] The confirmation message includes: action description, source identifier, channel type, trust level, and risk level
 - [ ] If the user denies, the skill instructs the LLM to abandon the action
-- [ ] The audit log records the user's decision with `event_type: "action_confirm"` and `decision: "allow"` or `decision: "deny"`
-- [ ] `clawstrike confirm --json '{...}'` provides the same functionality via CLI for non-MCP agents
+- [x] The audit log records the user's decision with `event_type: "action_confirm"` and `decision: "allow"` or `decision: "deny"`
+- [x] `clawstrike confirm --json '{...}'` provides the same functionality via CLI for non-MCP agents
 
 ---
 
-### US-020: Action Allowlist Creation from Approval
+### US-020: Action Allowlist Creation from Approval ✅ DONE
 
 **Description:** As a ClawStrike user, I want the option to permanently allow a type of action when approving it so that I don't get prompted repeatedly for routine workflows.
 
 **Acceptance Criteria:**
-- [ ] When `action_gating.allowlist_learning` is `true` and the user calls `confirm` with `decision: "always_allow"` (or `"aa"`), an entry is created in the `action_allowlist` table with the `action_type` and `source_scope` set to the current `source_id`
-- [ ] When `decision` is `"always_allow_global"` (or `"aag"`), the entry is created with `source_scope: "global"`
-- [ ] When `action_gating.allowlist_learning` is `false`, `always_allow` / `always_allow_global` decisions are silently downgraded to `approve` — no allowlist rule is created
-- [ ] On subsequent `gate` tool calls, the allowlist is checked before applying the decision matrix — allowlisted actions return `recommendation: "allow"` immediately with `allowlisted: true` and the matching `allowlist_rule_id`
-- [ ] Allowlist matching: `action_type` exact match AND (`source_scope` is `"global"` OR `source_scope` matches `source_id`)
-- [ ] The audit log records the allowlist creation event (`event_type: "allowlist_creation"`) and all subsequent auto-allows reference the rule ID in the `action_gate` audit event details
+- [x] When `action_gating.allowlist_learning` is `true` and the user calls `confirm` with `decision: "always_allow"` (or `"aa"`), an entry is created in the `action_allowlist` table with the `action_type` and `source_scope` set to the current `source_id`
+- [x] When `decision` is `"always_allow_global"` (or `"aag"`), the entry is created with `source_scope: "global"`
+- [x] When `action_gating.allowlist_learning` is `false`, `always_allow` / `always_allow_global` decisions are silently downgraded to `approve` — no allowlist rule is created
+- [x] On subsequent `gate` tool calls, the allowlist is checked before applying the decision matrix — allowlisted actions return `recommendation: "allow"` immediately with `allowlisted: true` and the matching `allowlist_rule_id`
+- [x] Allowlist matching: `action_type` exact match AND (`source_scope` is `"global"` OR `source_scope` matches `source_id`)
+- [x] The audit log records the allowlist creation event (`event_type: "allowlist_creation"`) and all subsequent auto-allows reference the rule ID in the `action_gate` audit event details
 
 ---
 

@@ -386,3 +386,49 @@ def test_start_logs_audit_db_ready_with_event_count(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "ready" in result.output.lower()
     assert "events" in result.output
+
+
+# ---------------------------------------------------------------------------
+# US-019 — `clawstrike confirm` CLI command
+# ---------------------------------------------------------------------------
+
+_CONFIRM_PARAMS = json.dumps(
+    {
+        "action_type": "send_email",
+        "action_description": "send email to team",
+        "session_id": "cli-sess",
+        "source_id": "user@example.com",
+        "channel_type": "email_body",
+        "decision": "approve",
+    }
+)
+
+
+def test_confirm_returns_json(tmp_path: Path) -> None:
+    cfg_file = write_yaml(
+        tmp_path, minimal_config({"audit": {"db_path": str(tmp_path / "test.db")}})
+    )
+
+    with patch(
+        "clawstrike.mcpserver.create_classifier", return_value=_mock_classifier()
+    ):
+        result = runner.invoke(
+            app, ["confirm", "--json", _CONFIRM_PARAMS, "--config", str(cfg_file)]
+        )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["status"] == "recorded"
+    assert data["decision"] == "allow"
+    assert data["user_decision"] == "approve"
+
+
+def test_confirm_invalid_json_exits_1(tmp_path: Path) -> None:
+    cfg_file = write_yaml(tmp_path, minimal_config())
+
+    result = runner.invoke(
+        app, ["confirm", "--json", "not-json", "--config", str(cfg_file)]
+    )
+
+    assert result.exit_code == 1
+    assert "Invalid JSON" in result.output

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import sqlite3
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -638,88 +639,50 @@ def test_logs_invalid_last_duration_exits_1(tmp_path: Path) -> None:
     assert "bad" in result.output
 
 
-def test_logs_filter_by_source(tmp_path: Path) -> None:
-    """--source filters events to only those matching the source ID."""
-    db_path = tmp_path / "audit.db"
-    _seed_db(
-        db_path,
-        [
-            {"source_id": "alice@example.com"},
-            {"source_id": "bob@example.com"},
-        ],
-    )
-    cfg_file = write_yaml(
-        tmp_path, minimal_config({"audit": {"db_path": str(db_path)}})
-    )
-    out = tmp_path / "export.csv"
-
-    runner.invoke(
-        app,
-        [
-            "logs",
-            "--export",
-            "csv",
-            "--output",
-            str(out),
+@pytest.mark.parametrize(
+    "flag,flag_value,seed_events,expected_count,check_field,check_value",
+    [
+        (
             "--source",
             "alice@example.com",
-            "--config",
-            str(cfg_file),
-        ],
-    )
-
-    _, rows = _read_csv(out)
-    assert all(r["source_id"] == "alice@example.com" for r in rows)
-    assert len(rows) == 1
-
-
-def test_logs_filter_by_event_type(tmp_path: Path) -> None:
-    """--event-type filters events to only those with matching event_type."""
-    db_path = tmp_path / "audit.db"
-    _seed_db(
-        db_path,
-        [
-            {"event_type": "input_classification"},
-            {"event_type": "action_gate"},
-            {"event_type": "input_classification"},
-        ],
-    )
-    cfg_file = write_yaml(
-        tmp_path, minimal_config({"audit": {"db_path": str(db_path)}})
-    )
-    out = tmp_path / "export.csv"
-
-    runner.invoke(
-        app,
-        [
-            "logs",
-            "--export",
-            "csv",
-            "--output",
-            str(out),
+            [{"source_id": "alice@example.com"}, {"source_id": "bob@example.com"}],
+            1,
+            "source_id",
+            "alice@example.com",
+        ),
+        (
             "--event-type",
             "action_gate",
-            "--config",
-            str(cfg_file),
-        ],
-    )
-
-    _, rows = _read_csv(out)
-    assert len(rows) == 1
-    assert rows[0]["event_type"] == "action_gate"
-
-
-def test_logs_filter_by_decision(tmp_path: Path) -> None:
-    """--decision filters events to only those with the given decision."""
+            [
+                {"event_type": "input_classification"},
+                {"event_type": "action_gate"},
+                {"event_type": "input_classification"},
+            ],
+            1,
+            "event_type",
+            "action_gate",
+        ),
+        (
+            "--decision",
+            "block",
+            [{"decision": "pass"}, {"decision": "block"}, {"decision": "pass"}],
+            1,
+            "decision",
+            "block",
+        ),
+    ],
+)
+def test_logs_filter(
+    tmp_path: Path,
+    flag: str,
+    flag_value: str,
+    seed_events: list[dict],
+    expected_count: int,
+    check_field: str,
+    check_value: str,
+) -> None:
     db_path = tmp_path / "audit.db"
-    _seed_db(
-        db_path,
-        [
-            {"decision": "pass"},
-            {"decision": "block"},
-            {"decision": "pass"},
-        ],
-    )
+    _seed_db(db_path, seed_events)
     cfg_file = write_yaml(
         tmp_path, minimal_config({"audit": {"db_path": str(db_path)}})
     )
@@ -733,28 +696,29 @@ def test_logs_filter_by_decision(tmp_path: Path) -> None:
             "csv",
             "--output",
             str(out),
-            "--decision",
-            "block",
+            flag,
+            flag_value,
             "--config",
             str(cfg_file),
         ],
     )
 
     _, rows = _read_csv(out)
-    assert len(rows) == 1
-    assert rows[0]["decision"] == "block"
+    assert len(rows) == expected_count
+    assert all(r[check_field] == check_value for r in rows)
 
 
 def test_logs_filter_by_last(tmp_path: Path) -> None:
     """--last filters out events older than the specified duration."""
+    from datetime import datetime
+
     db_path = tmp_path / "audit.db"
+    recent_ts = datetime.now(UTC).isoformat()
     _seed_db(
         db_path,
         [
-            # Old event — outside any recent window.
             {"timestamp": "2020-01-01T00:00:00+00:00", "event_type": "old_event"},
-            # Recent event — within 1 hour.
-            {"timestamp": "2026-02-26T12:00:00+00:00", "event_type": "recent_event"},
+            {"timestamp": recent_ts, "event_type": "recent_event"},
         ],
     )
     cfg_file = write_yaml(

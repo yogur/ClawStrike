@@ -64,22 +64,14 @@ def test_create_classifier_uses_correct_model_id(
     assert clf._model_id == expected_id
 
 
-def test_create_classifier_raises_on_load_failure() -> None:
+def test_create_classifier_load_failure_raises_with_model_id() -> None:
     with patch(
         "clawstrike.classifier.PromptGuardClassifier.__init__",
         side_effect=OSError("connection refused"),
     ):
-        with pytest.raises(RuntimeError, match="Failed to load classifier"):
+        with pytest.raises(RuntimeError, match="Failed to load classifier") as exc_info:
             create_classifier(ClassifierModel.MULTILINGUAL)
-
-
-def test_create_classifier_error_message_contains_model_id() -> None:
-    with patch(
-        "clawstrike.classifier.PromptGuardClassifier.__init__",
-        side_effect=OSError("no such file"),
-    ):
-        with pytest.raises(RuntimeError, match="Llama-Prompt-Guard-2-86M"):
-            create_classifier(ClassifierModel.MULTILINGUAL)
+    assert "Llama-Prompt-Guard-2-86M" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

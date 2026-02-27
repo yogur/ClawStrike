@@ -15,64 +15,26 @@ from clawstrike.gating import apply_decision_matrix, classify_action, downgrade_
 # ---------------------------------------------------------------------------
 
 
-def test_shell_exec_is_critical() -> None:
-    risk, _ = classify_action("shell_exec")
-    assert risk == "critical"
-
-
-def test_exec_is_critical() -> None:
-    risk, _ = classify_action("exec")
-    assert risk == "critical"
-
-
-def test_skill_install_is_critical() -> None:
-    risk, _ = classify_action("skill_install")
-    assert risk == "critical"
-
-
-def test_cron_create_is_critical() -> None:
-    risk, _ = classify_action("cron_create")
-    assert risk == "critical"
-
-
-def test_send_email_is_high() -> None:
-    risk, _ = classify_action("send_email")
-    assert risk == "high"
-
-
-def test_file_write_is_high() -> None:
-    risk, _ = classify_action("file_write")
-    assert risk == "high"
-
-
-def test_calendar_modify_is_high() -> None:
-    risk, _ = classify_action("calendar_modify")
-    assert risk == "high"
-
-
-def test_file_read_sensitive_is_medium() -> None:
-    risk, _ = classify_action("file_read_sensitive")
-    assert risk == "medium"
-
-
-def test_web_browse_is_medium() -> None:
-    risk, _ = classify_action("web_browse")
-    assert risk == "medium"
-
-
-def test_calendar_read_is_low() -> None:
-    risk, _ = classify_action("calendar_read")
-    assert risk == "low"
-
-
-def test_file_read_is_low() -> None:
-    risk, _ = classify_action("file_read")
-    assert risk == "low"
-
-
-def test_list_directory_is_low() -> None:
-    risk, _ = classify_action("list_directory")
-    assert risk == "low"
+@pytest.mark.parametrize(
+    "action_type,expected_risk",
+    [
+        ("shell_exec", "critical"),
+        ("exec", "critical"),
+        ("skill_install", "critical"),
+        ("cron_create", "critical"),
+        ("send_email", "high"),
+        ("file_write", "high"),
+        ("calendar_modify", "high"),
+        ("file_read_sensitive", "medium"),
+        ("web_browse", "medium"),
+        ("calendar_read", "low"),
+        ("file_read", "low"),
+        ("list_directory", "low"),
+    ],
+)
+def test_taxonomy_action_risk(action_type: str, expected_risk: str) -> None:
+    risk, _ = classify_action(action_type)
+    assert risk == expected_risk
 
 
 def test_known_action_type_reason_is_taxonomy_match() -> None:
@@ -136,20 +98,17 @@ def test_decision_matrix(
 # ---------------------------------------------------------------------------
 
 
-def test_downgrade_high_to_medium() -> None:
-    assert downgrade_trust(TrustLevel.HIGH) == TrustLevel.MEDIUM
-
-
-def test_downgrade_medium_to_low() -> None:
-    assert downgrade_trust(TrustLevel.MEDIUM) == TrustLevel.LOW
-
-
-def test_downgrade_low_to_untrusted() -> None:
-    assert downgrade_trust(TrustLevel.LOW) == TrustLevel.UNTRUSTED
-
-
-def test_downgrade_untrusted_stays_untrusted() -> None:
-    assert downgrade_trust(TrustLevel.UNTRUSTED) == TrustLevel.UNTRUSTED
+@pytest.mark.parametrize(
+    "input_level,expected",
+    [
+        (TrustLevel.HIGH, TrustLevel.MEDIUM),
+        (TrustLevel.MEDIUM, TrustLevel.LOW),
+        (TrustLevel.LOW, TrustLevel.UNTRUSTED),
+        (TrustLevel.UNTRUSTED, TrustLevel.UNTRUSTED),
+    ],
+)
+def test_downgrade_trust(input_level: TrustLevel, expected: TrustLevel) -> None:
+    assert downgrade_trust(input_level) == expected
 
 
 def test_double_downgrade_stacks() -> None:

@@ -82,46 +82,48 @@ def test_missing_classifier_section_uses_default(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_unknown_top_level_key_warns(
-    tmp_path: Path, capsys: pytest.CaptureFixture
+@pytest.mark.parametrize(
+    "raw_data,expected_key",
+    [
+        (
+            {
+                "clawstrike": {"classifier": {"model": "multilingual"}},
+                "totally_unknown_top_level": "value",
+            },
+            "totally_unknown_top_level",
+        ),
+        (
+            {
+                "clawstrike": {
+                    "classifier": {"model": "multilingual"},
+                    "unknown_nested_key": "ignored",
+                }
+            },
+            "unknown_nested_key",
+        ),
+        (
+            {
+                "clawstrike": {
+                    "classifier": {"model": "multilingual", "future_field": "xyz"}
+                }
+            },
+            "future_field",
+        ),
+    ],
+)
+def test_unknown_key_warns(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    raw_data: dict,
+    expected_key: str,
 ) -> None:
-    data = minimal_config()
-    data["totally_unknown_top_level"] = "value"
-    cfg_file = write_yaml(tmp_path, data)
+    cfg_file = write_yaml(tmp_path, raw_data)
 
     config = load_config(cfg_file)  # must NOT raise
 
     captured = capsys.readouterr()
-    assert "totally_unknown_top_level" in captured.err
+    assert expected_key in captured.err
     assert "Warning" in captured.err
-    assert isinstance(config, ClawStrikeConfig)
-
-
-def test_unknown_nested_key_warns(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
-    data = minimal_config({"unknown_nested_key": "ignored"})
-    cfg_file = write_yaml(tmp_path, data)
-
-    config = load_config(cfg_file)
-
-    captured = capsys.readouterr()
-    assert "unknown_nested_key" in captured.err
-    assert isinstance(config, ClawStrikeConfig)
-
-
-def test_unknown_classifier_key_warns(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
-    data: dict = {
-        "clawstrike": {"classifier": {"model": "multilingual", "future_field": "xyz"}}
-    }
-    cfg_file = write_yaml(tmp_path, data)
-
-    config = load_config(cfg_file)
-
-    captured = capsys.readouterr()
-    assert "future_field" in captured.err
     assert isinstance(config, ClawStrikeConfig)
 
 

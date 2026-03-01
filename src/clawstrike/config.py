@@ -43,6 +43,13 @@ class LlmJudgeTrigger(StrEnum):
     BOTH = "both"
 
 
+class ContactOverrideLevel(StrEnum):
+    """Valid trust override levels for contacts defined in config."""
+
+    TRUSTED = "trusted"
+    BLOCKED = "blocked"
+
+
 # ---------------------------------------------------------------------------
 # Config models — all use extra="allow" so that unknown fields are stored in
 # model_extra, enabling downstream warning via _warn_extra_fields().
@@ -106,6 +113,7 @@ class TrustConfig(BaseModel):
         }
     )
     auto_promote_after: int = 5
+    contacts: dict[str, ContactOverrideLevel] = Field(default_factory=dict)
 
 
 class ActionGatingConfig(BaseModel):

@@ -37,6 +37,27 @@ def make_cfg_with_trust(tmp_path: Path, channel: str, trust: str) -> ClawStrikeC
     return load_config(write_yaml(tmp_path, data))
 
 
+def make_cfg_with_contacts(
+    tmp_path: Path,
+    contacts: dict[str, str],
+    *,
+    channel: str = "email_body",
+    channel_trust: str = "low",
+    db_name: str = "contacts_test.db",
+) -> ClawStrikeConfig:
+    """Return a config with *contacts* trust overrides and an isolated DB."""
+    data = minimal_config(
+        {
+            "audit": {"db_path": str(tmp_path / db_name)},
+            "trust": {
+                "channel_defaults": {channel: channel_trust},
+                "contacts": contacts,
+            },
+        }
+    )
+    return load_config(write_yaml(tmp_path, data))
+
+
 # ---------------------------------------------------------------------------
 # Async DB helpers
 # ---------------------------------------------------------------------------

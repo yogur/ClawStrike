@@ -187,20 +187,20 @@
 
 ---
 
-### US-014: Config-Based Contact Trust Overrides
+### US-014: Config-Based Contact Trust Overrides ✅ DONE
 
 **Description:** As a ClawStrike user, I want to define trust overrides for specific contacts in my config file so that I can manually trust or block sources without exposing admin commands to the agent.
 
 **Acceptance Criteria:**
-- [ ] The `trust.contacts` section in `clawstrike.yaml` accepts a dict mapping `source_id` → trust level
-- [ ] Valid trust levels for overrides: `"trusted"` (treated as HIGH trust) and `"blocked"`
-- [ ] Blocked contacts have all their inputs immediately returned with a block recommendation without classification — the classifier is not invoked
-- [ ] Trusted contacts use the HIGH trust tier regardless of channel defaults and regardless of the dynamic contact registry
-- [ ] Config overrides take precedence over the dynamic contact registry at resolution time; the contact's stored `trust_level` in the DB is not modified
-- [ ] Removing a contact from `trust.contacts` in config restores automatic trust behavior (dynamic registry applies again)
-- [ ] A config override for a `source_id` not yet in the contact registry is valid; the contact record is created on first interaction
-- [ ] Each override application is recorded in the audit log with `event_type: "trust_update"` and `details.reason: "config_override"`
-- [ ] There are no `clawstrike trust` or `clawstrike block` CLI commands — trust mutation is config-file-only to prevent a compromised agent from persistently weakening security (see PRD Section 4.5)
+- [x] The `trust.contacts` section in `clawstrike.yaml` accepts a dict mapping `source_id` → trust level
+- [x] Valid trust levels for overrides: `"trusted"` (treated as HIGH trust) and `"blocked"`
+- [x] Blocked contacts have all their inputs immediately returned with a block recommendation without classification — the classifier is not invoked
+- [x] Trusted contacts use the HIGH trust tier regardless of channel defaults and regardless of the dynamic contact registry
+- [x] Config overrides take precedence over the dynamic contact registry at resolution time; the contact's stored `trust_level` in the DB is not modified
+- [x] Removing a contact from `trust.contacts` in config restores automatic trust behavior (dynamic registry applies again)
+- [x] A config override for a `source_id` not yet in the contact registry is valid; the contact record is created on first interaction
+- [x] Each override application is recorded in the audit log with `event_type: "trust_update"` and `details.reason: "config_override"`
+- [x] There are no `clawstrike trust` or `clawstrike block` CLI commands — trust mutation is config-file-only to prevent a compromised agent from persistently weakening security (see PRD Section 4.5)
 
 ---
 

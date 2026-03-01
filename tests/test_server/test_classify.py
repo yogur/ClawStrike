@@ -20,6 +20,7 @@ from clawstrike.config import ClawStrikeConfig, load_config
 from .helpers import (
     get_audit_events,
     get_contact_from_db,
+    make_cfg_with_contacts,
     make_cfg_with_trust,
     minimal_config,
     write_yaml,
@@ -1132,3 +1133,270 @@ async def test_classify_mismatch_e2e_gate_uses_low_trust(
     assert gd["effective_trust_level"] == "low"
     assert gd["content_source_mismatch"] is True
     assert gd["recommendation"] == "block"  # send_email HIGH risk + LOW trust → block
+
+
+# ---------------------------------------------------------------------------
+# Config-Based Contact Trust Overrides (classify side)
+#
+# trust.contacts in config maps source_id → "trusted" | "blocked".
+# "blocked"  → block immediately, classifier NOT invoked.
+# "trusted"  → HIGH trust regardless of channel defaults or first-contact status.
+# ---------------------------------------------------------------------------
+
+
+async def test_config_blocked_contact_returns_block_without_invoking_classifier(
+    tmp_path: Path, reset_server_config: MagicMock
+) -> None:
+    """Blocked contacts return decision=block and the classifier is never called."""
+    import clawstrike.mcpserver as srv
+
+    cfg = make_cfg_with_contacts(tmp_path, {"blocked@example.com": "blocked"})
+    srv.init_server(cfg)
+
+    result = await srv.mcp.call_tool(
+        "classify",
+        {
+            "text": "hello",
+            "source_id": "blocked@example.com",
+            "channel_type": "email_body",
+            "session_id": "test-session",
+        },
+    )
+    data = result.structured_content
+    assert data["decision"] == "block"
+    assert data["reason"] == "contact_blocked"
+    assert data["trust_level"] == "blocked"
+    assert data["content_source_mismatch"] is False
+    # Classifier must NOT have been invoked.
+    reset_server_config.classify.assert_not_called()
+
+
+async def test_config_blocked_contact_creates_contact_record_on_first_interaction(
+    tmp_path: Path, reset_server_config: MagicMock
+) -> None:
+    """A blocked contact's record is created in the DB even though they are blocked."""
+    import clawstrike.mcpserver as srv
+
+    cfg = make_cfg_with_contacts(tmp_path, {"blocked@example.com": "blocked"})
+    srv.init_server(cfg)
+
+    result = await srv.mcp.call_tool(
+        "classify",
+        {
+            "text": "hello",
+            "source_id": "blocked@example.com",
+            "channel_type": "email_body",
+            "session_id": "test-session",
+        },
+    )
+    assert result.structured_content["is_first_contact"] is True
+    record = await get_contact_from_db(str(cfg.audit.db_path), "blocked@example.com")
+    assert record.source_id == "blocked@example.com"
+
+
+async def test_config_blocked_contact_writes_trust_update_audit_event(
+    tmp_path: Path, reset_server_config: MagicMock
+) -> None:
+    """Blocked contact write triggers a trust_update audit event with reason=config_override."""
+    import clawstrike.mcpserver as srv
+
+    cfg = make_cfg_with_contacts(tmp_path, {"blocked@example.com": "blocked"})
+    srv.init_server(cfg)
+
+    await srv.mcp.call_tool(
+        "classify",
+        {
+            "text": "hello",
+            "source_id": "blocked@example.com",
+            "channel_type": "email_body",
+            "session_id": "test-session",
+        },
+    )
+
+    events = await get_audit_events(str(cfg.audit.db_path), event_type="trust_update")
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["source_id"] == "blocked@example.com"
+    assert ev["trust_level"] == "blocked"
+    details = json.loads(ev["details_json"])
+    assert details["reason"] == "config_override"
+    assert details["new_trust"] == "blocked"
+
+
+async def test_config_blocked_contact_also_writes_classify_audit_event(
+    tmp_path: Path, reset_server_config: MagicMock
+) -> None:
+    """Blocked contacts also write a classify audit event with decision=block."""
+    import clawstrike.mcpserver as srv
+
+    cfg = make_cfg_with_contacts(tmp_path, {"blocked@example.com": "blocked"})
+    srv.init_server(cfg)
+
+    await srv.mcp.call_tool(
+        "classify",
+        {
+            "text": "hello",
+            "source_id": "blocked@example.com",
+            "channel_type": "email_body",
+            "session_id": "test-session",
+        },
+    )
+
+    events = await get_audit_events(str(cfg.audit.db_path), event_type="classify")
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["decision"] == "block"
+    assert ev["trust_level"] == "blocked"
+    assert ev["raw_input_hash"] is not None
+
+
+async def test_config_trusted_contact_uses_high_trust_tier(
+    tmp_path: Path, reset_server_config: MagicMock
+) -> None:
+    """Contacts listed as 'trusted' in config resolve to HIGH trust regardless of channel."""
+    import clawstrike.mcpserver as srv
+
+    # email_body maps to LOW trust, but config marks this contact as trusted.
+    cfg = make_cfg_with_contacts(
+        tmp_path,
+        {"trusted@example.com": "trusted"},
+        channel="email_body",
+        channel_trust="low",
+    )
+    srv.init_server(cfg)
+
+    # Seed: register contact so is_first_contact is False on the test call.
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=0.0, label="benign", model="mock-model", latency_ms=1.0
+    )
+    await srv.mcp.call_tool(
+        "classify",
+        {
+            "text": "hi",
+            "source_id": "trusted@example.com",
+            "channel_type": "email_body",
+            "session_id": "seed-session",
+        },
+    )
+
+    result = await srv.mcp.call_tool(
+        "classify",
+        {
+            "text": "hello",
+            "source_id": "trusted@example.com",
+            "channel_type": "email_body",
+            "session_id": "test-session",
+        },
+    )
+    data = result.structured_content
+    assert data["trust_level"] == "high"
+    # HIGH threshold: eff_block = 0.92 + 0.05 = 0.97
+    assert pytest.approx(data["threshold_applied"]["block"], abs=1e-9) == 0.97
+
+
+async def test_config_trusted_contact_overrides_first_contact_untrusted(
+    tmp_path: Path, reset_server_config: MagicMock
+) -> None:
+    """Even a brand-new contact listed as 'trusted' in config gets HIGH trust (not UNTRUSTED)."""
+    import clawstrike.mcpserver as srv
+
+    cfg = make_cfg_with_contacts(tmp_path, {"new-trusted@example.com": "trusted"})
+    srv.init_server(cfg)
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=0.0, label="benign", model="mock-model", latency_ms=1.0
+    )
+    result = await srv.mcp.call_tool(
+        "classify",
+        {
+            "text": "hello",
+            "source_id": "new-trusted@example.com",
+            "channel_type": "email_body",
+            "session_id": "test-session",
+        },
+    )
+    data = result.structured_content
+    assert data["is_first_contact"] is True
+    assert data["trust_level"] == "high"
+
+
+async def test_config_trusted_contact_writes_trust_update_audit_event(
+    tmp_path: Path, reset_server_config: MagicMock
+) -> None:
+    """Trusted config override writes a trust_update audit event with reason=config_override."""
+    import clawstrike.mcpserver as srv
+
+    cfg = make_cfg_with_contacts(tmp_path, {"trusted@example.com": "trusted"})
+    srv.init_server(cfg)
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=0.0, label="benign", model="mock-model", latency_ms=1.0
+    )
+    await srv.mcp.call_tool(
+        "classify",
+        {
+            "text": "hello",
+            "source_id": "trusted@example.com",
+            "channel_type": "email_body",
+            "session_id": "test-session",
+        },
+    )
+
+    events = await get_audit_events(str(cfg.audit.db_path), event_type="trust_update")
+    config_override_events = [
+        e
+        for e in events
+        if json.loads(e["details_json"]).get("reason") == "config_override"
+    ]
+    assert len(config_override_events) == 1
+    ev = config_override_events[0]
+    assert ev["trust_level"] == "high"
+    details = json.loads(ev["details_json"])
+    assert details["new_trust"] == "high"
+    assert details["reason"] == "config_override"
+
+
+async def test_config_no_override_uses_normal_trust_resolution(
+    cfg: ClawStrikeConfig, reset_server_config: MagicMock
+) -> None:
+    """Contacts NOT listed in trust.contacts use normal channel-based trust resolution."""
+    import clawstrike.mcpserver as srv
+
+    reset_server_config.classify.return_value = ClassifierResult(
+        score=0.0, label="benign", model="mock-model", latency_ms=1.0
+    )
+    srv.init_server(cfg)
+
+    # Seed so first-contact override does not apply.
+    await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    result = await srv.mcp.call_tool("classify", _CLASSIFY_ARGS)
+    # email_body → LOW trust (no config override).
+    assert result.structured_content["trust_level"] == "low"
+
+
+@pytest.mark.parametrize("override", ["trusted", "blocked"])
+async def test_config_override_valid_levels_accepted_by_config(
+    tmp_path: Path, override: str
+) -> None:
+    """Config accepts 'trusted' and 'blocked' as valid contact override levels."""
+    data = minimal_config(
+        {
+            "audit": {"db_path": str(tmp_path / "cfg_test.db")},
+            "trust": {"contacts": {"some@example.com": override}},
+        }
+    )
+    cfg = load_config(write_yaml(tmp_path, data))
+    assert cfg.trust.contacts["some@example.com"].value == override
+
+
+async def test_config_invalid_contact_override_level_raises_error(
+    tmp_path: Path,
+) -> None:
+    """Config rejects invalid contact override levels with a validation error."""
+    data = minimal_config(
+        {
+            "trust": {"contacts": {"some@example.com": "high"}},
+        }
+    )
+    with pytest.raises(ValueError, match="validation failed"):
+        load_config(write_yaml(tmp_path, data))

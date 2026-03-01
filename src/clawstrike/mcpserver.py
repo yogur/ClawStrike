@@ -10,7 +10,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from clawstrike.classifier import BaseClassifier, ClassifierResult, create_classifier
-from clawstrike.config import ClawStrikeConfig, TrustLevel
+from clawstrike.config import ClawStrikeConfig, ContactOverrideLevel, TrustLevel
 from clawstrike.db import (
     check_allowlist,
     get_or_create_contact,
@@ -137,6 +137,64 @@ async def classify(
     """
     cfg = _require_config()
     clf = _require_classifier()
+
+    # Check config-based contact trust overrides before invoking the classifier.
+    config_override = cfg.trust.contacts.get(source_id)
+
+    # Blocked contacts: return a block decision immediately without classification.
+    if config_override == ContactOverrideLevel.BLOCKED:
+        is_first_contact = False
+        raw_input_hash = hashlib.sha256(text.encode()).hexdigest()
+        raw_input_snippet: str | None = None
+        if cfg.audit.log_raw_input:
+            raw_input_snippet = text[: cfg.audit.raw_input_max_chars]
+        if _db_path:
+            async with open_db(_db_path) as conn:
+                _, is_first_contact = await get_or_create_contact(
+                    conn, source_id, channel_type
+                )
+                await insert_audit_event(
+                    conn,
+                    event_type="trust_update",
+                    session_id=session_id,
+                    source_id=source_id,
+                    channel_type=channel_type,
+                    trust_level="blocked",
+                    details={
+                        "previous_trust": resolve_trust_level(
+                            channel_type, cfg.trust
+                        ).value,
+                        "new_trust": "blocked",
+                        "reason": "config_override",
+                    },
+                )
+                await insert_audit_event(
+                    conn,
+                    event_type="classify",
+                    session_id=session_id,
+                    source_id=source_id,
+                    channel_type=channel_type,
+                    decision="block",
+                    is_first_contact=is_first_contact,
+                    trust_level="blocked",
+                    raw_input_hash=raw_input_hash,
+                    raw_input_snippet=raw_input_snippet,
+                    details={
+                        "reason": "config_override",
+                        "elevated_scrutiny": False,
+                        "content_source_mismatch": False,
+                    },
+                )
+        return {
+            "decision": "block",
+            "reason": "contact_blocked",
+            "source_id": source_id,
+            "channel_type": channel_type,
+            "is_first_contact": is_first_contact,
+            "trust_level": "blocked",
+            "content_source_mismatch": False,
+        }
+
     result: ClassifierResult = clf.classify(text)
 
     # Contact registry — detect first contact.
@@ -148,9 +206,12 @@ async def classify(
                 conn, source_id, channel_type
             )
 
-    # First contacts are always UNTRUSTED regardless of channel defaults.
-    if is_first_contact:
-        trust_level: TrustLevel = TrustLevel.UNTRUSTED
+    # Config "trusted" override applies HIGH trust regardless of channel defaults
+    # or first-contact status. Otherwise, first contacts are always UNTRUSTED.
+    if config_override == ContactOverrideLevel.TRUSTED:
+        trust_level: TrustLevel = TrustLevel.HIGH
+    elif is_first_contact:
+        trust_level = TrustLevel.UNTRUSTED
     else:
         trust_level = resolve_trust_level(channel_type, cfg.trust)
 
@@ -188,6 +249,26 @@ async def classify(
     # Post-decision DB writes: interaction tracking + audit log.
     if _db_path:
         async with open_db(_db_path) as conn:
+            # Write trust_update for config "trusted" override.
+            if config_override == ContactOverrideLevel.TRUSTED:
+                previous_trust = (
+                    TrustLevel.UNTRUSTED.value
+                    if is_first_contact
+                    else resolve_trust_level(channel_type, cfg.trust).value
+                )
+                await insert_audit_event(
+                    conn,
+                    event_type="trust_update",
+                    session_id=session_id,
+                    source_id=source_id,
+                    channel_type=channel_type,
+                    trust_level=TrustLevel.HIGH.value,
+                    details={
+                        "previous_trust": previous_trust,
+                        "new_trust": TrustLevel.HIGH.value,
+                        "reason": "config_override",
+                    },
+                )
             # Increment interaction_count for known, non-blocked contacts.
             if not is_first_contact and decision != "block" and contact is not None:
                 updated = await increment_interaction(conn, source_id)

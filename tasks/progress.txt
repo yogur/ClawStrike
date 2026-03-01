@@ -27,6 +27,7 @@
 - Allowlist check in `gate` runs BEFORE the decision matrix; if matched, `recommendation` is forced to `"allow"`. Response and audit event include `allowlisted: bool`, `allowlist_rule_id`, and `allowlist_source_scope`.
 - `confirm` tool uses `_DECISION_MAP` for case-insensitive normalization. `always_allow`/`always_allow_global` create allowlist rules only when `cfg.action_gating.allowlist_learning` is `True`; otherwise silently downgraded to `approve`.
 - New CLI commands follow the same pattern: `--json` input, `init_server`, `asyncio.run(srv.<tool>(**params))`, `json.dumps` output.
+- Config-based contact trust overrides: `TrustConfig.contacts` maps `source_id` → `ContactOverrideLevel` ("trusted"|"blocked"). Checked at the TOP of `classify` before classifier invocation. Blocked → early return (no classifier call, still creates DB record). Trusted → `TrustLevel.HIGH` overrides first-contact and channel defaults. Both write `trust_update` audit events with `reason="config_override"`. `ContactOverrideLevel` is separate from `TrustLevel` — Pydantic rejects invalid values like "high"/"medium" at config load time.
 
 ---
 
@@ -500,4 +501,30 @@
   - `guard_applied: bool` is always in the response (False by default); `guard_reason` is conditionally added only when guard fires — keeps response clean while remaining inspectable
   - The guard never fires in CLI mode because `_elevated_sessions` and `_mismatch_sessions` are module-level sets that are always empty in one-shot CLI invocations; no special CLI handling needed
   - Empty `session_id = ""` is never added to `_elevated_sessions`/`_mismatch_sessions` (guarded by `if session_id:` in classify), so guard naturally doesn't fire for empty session IDs
+---
+
+## [2026-03-01] - US-014
+
+- What was implemented:
+  - Added `ContactOverrideLevel` StrEnum (`"trusted"` | `"blocked"`) to `config.py`
+  - Added `contacts: dict[str, ContactOverrideLevel]` field to `TrustConfig` — maps `source_id` to a static trust override
+  - In `classify` tool: config override is checked before classifier invocation:
+    - `"blocked"` contacts: early return with `decision: "block"`, classifier is never called; contact record is still created in DB; trust_update + classify audit events written
+    - `"trusted"` contacts: trust overridden to HIGH regardless of channel default or first-contact status; classifier runs normally; trust_update audit event written
+  - Added `make_cfg_with_contacts()` helper to `tests/test_server/helpers.py`
+  - Added 10 new tests in `tests/test_server/test_classify.py`
+- Files changed:
+  - `src/clawstrike/config.py` — added `ContactOverrideLevel` enum, added `contacts` field to `TrustConfig`
+  - `src/clawstrike/mcpserver.py` — classify tool updated with config-override check and early-return for blocked contacts
+  - `tests/test_server/helpers.py` — added `make_cfg_with_contacts()` helper
+  - `tests/test_server/test_classify.py` — added US-014 test section (10 tests); imported `make_cfg_with_contacts`
+  - `tasks/clawstrike-user-stories.md` — marked US-014 as DONE
+- 281 tests pass; ruff check and ruff format clean
+- **Learnings for future iterations:**
+  - Config-override check runs at the TOP of `classify`, before `clf.classify()` — the classifier is never instantiated for blocked contacts. The `clf = _require_classifier()` call still runs (needed for non-blocked contacts), but `clf.classify(text)` does not.
+  - Blocked contacts still call `get_or_create_contact()` (to create DB record per AC), so the contact record exists even if they never pass classification.
+  - "Trusted" override uses HIGH trust (`TrustLevel.HIGH`) and this takes precedence over both first-contact UNTRUSTED and channel-default trust. The existing mismatch detection logic fires correctly for trusted contacts since they are HIGH trust.
+  - `ContactOverrideLevel` is a separate StrEnum from `TrustLevel` — values "trusted"/"blocked" are NOT in `TrustLevel`. This correctly prevents using "high"/"medium" etc. as contact overrides (Pydantic rejects them at config load time).
+  - The DB write block for "trusted" contacts inserts the trust_update event at the start of the same `open_db` context as the classify event and interaction tracking — all writes are atomic per request.
+  - `make_cfg_with_contacts()` helper pattern: `tmp_path` + contacts dict + optional channel/channel_trust/db_name — reusable for all future tests needing contact overrides.
 ---

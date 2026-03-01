@@ -223,7 +223,11 @@ CREATE TABLE contacts (
 **Behavior:**
 - On first contact from an unknown source: assign `untrusted` status, log the event, apply maximum scrutiny thresholds for this session.
 - Interaction count increments over time. After a configurable threshold (e.g., 5 interactions without incidents), auto-promote to the channel's default trust level.
-- Owner can manually trust or block contacts via a ClawStrike command (e.g., `/clawstrike trust <source_id>` or `/clawstrike block <source_id>`).
+
+**Manual trust overrides (config-file-only):**
+Static trust overrides for specific contacts are defined in the `trust.contacts` section of `clawstrike.yaml`. This is intentionally not a CLI command: exposing trust mutation through the CLI would allow a compromised agent to persistently weaken security across all future sessions. The config file should be made non-writable by the agent process (recommended: `chmod 600 clawstrike.yaml`, managed by the user as admin).
+
+Config overrides take precedence over the dynamic contact registry at resolution time — removing a contact from config restores automatic behavior. The contact's stored `trust_level` in the database is not modified; the override is applied at read time only. Each override application is recorded in the audit log.
 
 #### 4.2.3 Trust-Modulated Classifier Thresholds
 
@@ -296,7 +300,7 @@ The `confirm` MCP tool is a stateless endpoint that records the user's confirmat
 | `always_allow` | `aa` | Allow and create a source-scoped allowlist rule. |
 | `always_allow_global` | `aag` | Allow and create a global allowlist rule (any source). |
 
-When `action_gating.allowlist_learning` is `false`, `always_allow` and `always_allow_global` are silently downgraded to `approve` (no rule is created).
+When `action_gating.allowlist_learning` is `false` (the default), `always_allow` and `always_allow_global` are silently downgraded to `approve` (no rule is created). Users must explicitly set `allowlist_learning: true` to enable persistent rule creation from approvals.
 
 **Advisory limitation:** Like `classify` and `gate`, the `confirm` tool depends on the LLM actually calling it. A prompt injection could instruct the LLM to skip confirmation or fabricate a decision. The audit log captures what was reported, providing data to assess compliance gaps.
 
@@ -313,9 +317,11 @@ CREATE TABLE action_allowlist (
 );
 ```
 
-**Allowlist lookup in `gate`:** On each `gate` call, the allowlist is checked before applying the decision matrix. A match occurs when `action_type` matches exactly AND (`source_scope` is `"global"` OR `source_scope` matches the current `source_id`). Matched actions return `recommendation: "allow"` immediately with `allowlisted: true` and the matching `allowlist_rule_id` in the response. The audit event for auto-allowed actions references the rule ID.
+**Allowlist lookup in `gate`:** On each `gate` call, the allowlist is checked before applying the decision matrix. Rules from both the SQLite database and the `action_gating.static_rules` config section are checked. A match occurs when `action_type` matches exactly AND (`source_scope` is `"global"` OR `source_scope` matches the current `source_id`). Matched actions return `recommendation: "allow"` immediately with `allowlisted: true`, the matching `allowlist_rule_id` (for DB rules), and `allowlist_source: "config"` or `"db"` in the response. The audit event for auto-allowed actions references the rule source.
 
-**`action_pattern` (deferred):** The column exists for forward compatibility. Pattern-based matching (regex/glob on action descriptions or arguments) is deferred to a future version; the current implementation only matches on `action_type` exactly.
+**Static config rules:** Pre-approved action rules can be defined in `action_gating.static_rules` in `clawstrike.yaml`. They use the same matching logic as DB rules but cannot be modified by the agent at runtime. This is the recommended way to define standing allowlist policies. No `allowlist remove` or `allowlist clear` CLI commands exist — removing a DB-created rule requires direct DB access or clearing the DB file; static rules are managed by editing the config.
+
+**`action_pattern` (deferred):** The column exists in the DB for forward compatibility. Pattern-based matching (regex/glob on action descriptions or arguments) is deferred to a future version; the current implementation only matches on `action_type` exactly.
 
 Over time, the gating becomes less intrusive for the user's normal workflows while maintaining strict controls for novel or untrusted actions.
 
@@ -382,6 +388,40 @@ clawstrike logs --source "user@example.com"
 clawstrike logs --event-type action_gate --decision block
 clawstrike logs --export csv --output ./audit-export.csv
 ```
+
+---
+
+### 4.5 Security Considerations for CLI Mode
+
+**Threat model:** In CLI integration mode, OpenClaw invokes ClawStrike as a shell command. A sufficiently compromised agent — one that has bypassed or been instructed to ignore the ClawStrike skill — could invoke admin-level ClawStrike commands directly (e.g., modifying contact trust levels or adding global allowlist rules). Unlike operational bypasses (skipping `classify`/`gate` calls), admin mutations are persistent: they weaken security policy across all future sessions, not just the current one.
+
+The `confirm` tool's `always_allow` and `always_allow_global` options compound this risk: a compromised agent could fabricate an `always_allow_global` decision for `shell_exec`, permanently disabling gating for that action type.
+
+**Mitigations:**
+
+1. **Admin operations are config-file-only.** Trust overrides (`trust.contacts`) and static allowlist rules (`action_gating.static_rules`) are defined in `clawstrike.yaml`, which is read at startup. The agent has no CLI command to modify these. Removing the CLI as an admin surface eliminates the persistent-corruption attack path.
+
+2. **Secure config file permissions.** The config file should be owned and writable only by the admin user, not the service account running OpenClaw. Use `clawstrike init` to bootstrap a config with `0o600` permissions. Even if the agent has shell access, it cannot modify the config file without privilege escalation.
+
+3. **`guard_allowlist_on_flag` (defense-in-depth for `confirm`).** When this option is `true` (the default), any `always_allow` or `always_allow_global` decision submitted to the `confirm` tool is silently downgraded to `approve` if the current session is in `_elevated_sessions` (prompt injection detected) or `_mismatch_sessions` (content-source mismatch). This prevents a compromised session from creating persistent allowlist rules even if `allowlist_learning` is enabled. The `confirm` response includes `guard_applied: true` and `guard_reason` when this triggers.
+
+4. **`allowlist_learning: false` (default).** With `allowlist_learning` disabled, `always_allow` decisions never create DB rules regardless of session state. The DB allowlist table remains empty, so even direct SQLite writes by the agent have no effect via the gating path. Enable `allowlist_learning: true` only for MCP mode deployments where session-level guard mechanisms are active.
+
+5. **Audit trail.** Every security decision — including trust_update and allowlist_creation events — is written to the audit log. An attacker cannot silently modify policy without leaving a forensic record.
+
+**`clawstrike init` — Secure bootstrapping:**
+
+Running `clawstrike init` creates a `clawstrike.yaml` in the working directory with secure defaults and restrictive file permissions (`0o600`). This is the recommended starting point for all deployments. See the CLI reference and US-042 for details.
+
+**Recommended deployment pattern:**
+
+- Run OpenClaw under a dedicated service account (e.g., `openclaw-svc`).
+- Manage `clawstrike.yaml` as the admin user. Do not grant the service account write access to it.
+- Use `clawstrike init` to create the initial config with correct permissions.
+- Keep `allowlist_learning: false` unless you specifically need dynamic rule creation.
+- Store the `data/` directory (audit DB, contact registry) on a filesystem accessible only to the service account and admin.
+
+**Acknowledged limitation:** An agent with shell access can write directly to the SQLite database files (contact registry, allowlist). This is mitigated by: (1) `allowlist_learning: false` keeps the allowlist table empty, so direct inserts have no effect unless the agent also knows the exact schema; (2) the audit log captures all tool-level decisions, so direct DB manipulation is detectable by comparing audit events against DB state; (3) filesystem permissions on `data/` can restrict DB access to the service account only.
 
 ---
 
@@ -491,11 +531,27 @@ clawstrike:
       low:        { block: -0.05, flag: -0.10 }
       untrusted:  { block: -0.10, flag: -0.20 }
     auto_promote_after: 5      # interactions before auto-promoting to channel default
+    # Static trust overrides: source_id -> trust level
+    # Overrides take precedence over the dynamic contact registry.
+    # Use "blocked" to block all input from a source without classification.
+    # Use "trusted" to treat a source as HIGH trust regardless of channel defaults.
+    # Recommended: make clawstrike.yaml non-writable by the agent (chmod 600).
+    contacts: {}
+    #   "attacker@evil.com": "blocked"
+    #   "friend@good.com": "trusted"
 
   action_gating:
     enabled: true
     confirmation_channel: "owner_dm"  # where to send approval prompts
-    allowlist_learning: true           # allow users to create rules from approvals
+    allowlist_learning: false          # true → always_allow creates persistent rules; false (default) → downgrades to approve
+    guard_allowlist_on_flag: true      # block always_allow in sessions with elevated_scrutiny or content_source_mismatch
+    # Pre-approved action rules defined in config — checked alongside DB rules in gate.
+    # Same matching logic: exact action_type AND global or source-scoped.
+    static_rules: []
+    #   - action_type: "send_email"
+    #     source_scope: "global"
+    #   - action_type: "file_read"
+    #     source_scope: "colleague@company.com"
 
   audit:
     enabled: true
@@ -520,7 +576,7 @@ clawstrike:
 - **MCP server:** fastmcp v3 (MCP tool interface for OpenClaw integration, stdio transport)
 - **Classifier inference:** Hugging Face Transformers + PyTorch (model loading, tokenization, inference)
 - **Data storage:** SQLite via aiosqlite (contact registry, audit log, action allowlist)
-- **CLI:** Typer (commands: `start`, `classify`, `gate`, `confirm`, `health`, `logs`, `allowlist`, `trust`, `block`)
+- **CLI:** Typer (commands: `start`, `classify`, `gate`, `confirm`, `health`, `logs`, `allowlist list`, `init`)
 - **Configuration:** Pydantic v2 + PyYAML (typed config schema with validation)
 - **Logging:** structlog (structured JSON logging, pairs with audit events)
 - **Testing:** pytest + pytest-asyncio (unit, integration, E2E)

@@ -40,6 +40,14 @@ clawstrike:
     # to their channel's default trust level.
     auto_promote_after: 5
 
+    # Static trust overrides: source_id → trust level.
+    # Overrides take precedence over the dynamic contact registry.
+    # Valid levels: "trusted" (HIGH trust) or "blocked" (reject without classification).
+    # Manage this section as admin — do not grant the agent write access to this file.
+    contacts: {}
+    #   "attacker@evil.com": "blocked"
+    #   "friend@good.com": "trusted"
+
   action_gating:
     enabled: true
 
@@ -47,8 +55,24 @@ clawstrike:
     confirmation_channel: "owner_dm"
 
     # When true, approving a gated action offers an "always allow" option
-    # that creates a persistent allowlist rule.
-    allowlist_learning: true
+    # that creates a persistent allowlist rule in the database.
+    # Default is false — enable only if you need dynamic rule creation.
+    allowlist_learning: false
+
+    # When true (default), always_allow and always_allow_global decisions are
+    # downgraded to approve in sessions where prompt injection was detected
+    # (elevated_scrutiny) or a content-source mismatch was flagged.
+    # This prevents a compromised session from creating persistent allowlist rules.
+    guard_allowlist_on_flag: true
+
+    # Pre-approved action rules defined in config.
+    # Checked alongside database rules in gate — same matching logic.
+    # Use this for standing allowlist policies that should not be agent-modifiable.
+    static_rules: []
+    #   - action_type: "send_email"
+    #     source_scope: "global"
+    #   - action_type: "file_read"
+    #     source_scope: "colleague@company.com"
 
   audit:
     enabled: true

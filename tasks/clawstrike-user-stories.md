@@ -187,19 +187,20 @@
 
 ---
 
-### US-014: Manual Contact Trust Override *(Deferred — Phase 1.5)*
+### US-014: Config-Based Contact Trust Overrides
 
-**Description:** As a ClawStrike user, I want to manually trust or block specific contacts so that I can override automatic trust decisions.
+**Description:** As a ClawStrike user, I want to define trust overrides for specific contacts in my config file so that I can manually trust or block sources without exposing admin commands to the agent.
 
 **Acceptance Criteria:**
-- [ ] Running `/clawstrike trust <source_id>` via the configured channel sets the contact's `trust_level` to `'trusted'`
-- [ ] Running `/clawstrike block <source_id>` sets the contact's `trust_level` to `'blocked'`
-- [ ] Blocked contacts have all their inputs immediately returned with a block recommendation without classification
-- [ ] Trusted contacts use the `high` trust tier regardless of channel defaults
-- [ ] Each manual override is recorded in the audit log with `event_type: "trust_update"` and `created_by: "owner"`
-- [ ] Running `/clawstrike trust` or `/clawstrike block` with a non-existent `source_id` returns an error: `"Contact not found. Source must have at least one prior interaction."`
-
-Note: should not be possible by default unless config file exists and allows this feature (or enables risky features). Also, we should recommend to make the config-file non-agent writable via filesystem permissions for additional security.
+- [ ] The `trust.contacts` section in `clawstrike.yaml` accepts a dict mapping `source_id` → trust level
+- [ ] Valid trust levels for overrides: `"trusted"` (treated as HIGH trust) and `"blocked"`
+- [ ] Blocked contacts have all their inputs immediately returned with a block recommendation without classification — the classifier is not invoked
+- [ ] Trusted contacts use the HIGH trust tier regardless of channel defaults and regardless of the dynamic contact registry
+- [ ] Config overrides take precedence over the dynamic contact registry at resolution time; the contact's stored `trust_level` in the DB is not modified
+- [ ] Removing a contact from `trust.contacts` in config restores automatic trust behavior (dynamic registry applies again)
+- [ ] A config override for a `source_id` not yet in the contact registry is valid; the contact record is created on first interaction
+- [ ] Each override application is recorded in the audit log with `event_type: "trust_update"` and `details.reason: "config_override"`
+- [ ] There are no `clawstrike trust` or `clawstrike block` CLI commands — trust mutation is config-file-only to prevent a compromised agent from persistently weakening security (see PRD Section 4.5)
 
 ---
 
@@ -281,6 +282,7 @@ Note: should not be possible by default unless config file exists and allows thi
 **Acceptance Criteria:**
 - [x] When `action_gating.allowlist_learning` is `true` and the user calls `confirm` with `decision: "always_allow"` (or `"aa"`), an entry is created in the `action_allowlist` table with the `action_type` and `source_scope` set to the current `source_id`
 - [x] When `decision` is `"always_allow_global"` (or `"aag"`), the entry is created with `source_scope: "global"`
+- [x] `action_gating.allowlist_learning` defaults to `false` — users must explicitly enable it to allow `always_allow` to create persistent rules
 - [x] When `action_gating.allowlist_learning` is `false`, `always_allow` / `always_allow_global` decisions are silently downgraded to `approve` — no allowlist rule is created
 - [x] On subsequent `gate` tool calls, the allowlist is checked before applying the decision matrix — allowlisted actions return `recommendation: "allow"` immediately with `allowlisted: true` and the matching `allowlist_rule_id`
 - [x] Allowlist matching: `action_type` exact match AND (`source_scope` is `"global"` OR `source_scope` matches `source_id`)
@@ -288,15 +290,46 @@ Note: should not be possible by default unless config file exists and allows thi
 
 ---
 
-### US-021: Action Allowlist Management via CLI *(Deferred — Phase 1.5)*
+### US-021: Read-Only Allowlist CLI + Static Config Rules
 
-**Description:** As a ClawStrike user, I want to view and remove allowlist rules via the CLI so that I can audit and revoke permissions I've previously granted.
+**Description:** As a ClawStrike user, I want to view current allowlist rules and define static pre-approved actions in my config file so that I can audit and manage permissions without exposing mutation commands to the agent.
 
 **Acceptance Criteria:**
-- [ ] `clawstrike allowlist list` prints all allowlist rules in a table format showing ID, action type, action pattern, source scope, and creation date
-- [ ] `clawstrike allowlist remove <id>` deletes the rule with the given ID
-- [ ] `clawstrike allowlist clear` deletes all rules after a confirmation prompt ("This will remove X rules. Confirm? y/n")
-- [ ] Removals are recorded in the audit log with `event_type: "config_change"`
+- [ ] `clawstrike allowlist list` prints all allowlist rules (both dynamic DB rules and static config rules) in a table format showing source (db/config), ID (for DB rules), action type, source scope, and creation date
+- [ ] Static rules from `action_gating.static_rules` in config are checked alongside DB rules in `gate` — same matching logic (exact `action_type`, global or source-scoped)
+- [ ] Static config rules are distinguished from dynamic DB rules in the `gate` response (`allowlist_source: "config"` vs `"db"`)
+- [ ] The audit log for auto-allowed actions references whether the rule came from config or DB
+- [ ] There are no `allowlist remove` or `allowlist clear` CLI commands — removing dynamic rules requires direct DB access or clearing the DB file; static rules are managed by editing the config (see PRD Section 4.5 for rationale)
+
+---
+
+### US-042: Secure Config Bootstrapping (`clawstrike init`)
+
+**Description:** As a ClawStrike user, I want an init command that creates a config file with secure defaults and file permissions so that I can bootstrap a hardened setup without manual steps.
+
+**Acceptance Criteria:**
+- [ ] `clawstrike init` creates `clawstrike.yaml` in the working directory with all defaults and descriptive inline comments
+- [ ] If `clawstrike.yaml` already exists, the command aborts with an informational message and exits with code 1 (unless `--force` is passed, which overwrites the existing file)
+- [ ] The generated config uses secure defaults: `allowlist_learning: false`, `guard_allowlist_on_flag: true`, `mcp.enabled: false` (appropriate for CLI/OpenClaw deployments)
+- [ ] The `--mcp` flag generates the config with `mcp.enabled: true` (for MCP-capable agent deployments)
+- [ ] The config file is written with `0o600` permissions (owner read/write only)
+- [ ] The `data/` directory is created with `0o700` permissions
+- [ ] Output to stdout confirms creation: `Created clawstrike.yaml (mode 600). Writable only by the current user.`
+- [ ] The generated config includes a commented-out `trust.contacts` example and a commented-out `action_gating.static_rules` example
+
+---
+
+### US-043: Confirm Tool Guard for Flagged Sessions
+
+**Description:** As a ClawStrike user, I want `always_allow` decisions to be blocked in sessions where prompt injection was detected so that a compromised session cannot create persistent allowlist rules.
+
+**Acceptance Criteria:**
+- [ ] When `action_gating.guard_allowlist_on_flag` is `true` (default) and the session identified by `session_id` is in `_elevated_sessions` OR `_mismatch_sessions`, `always_allow` and `always_allow_global` decisions are silently downgraded to `approve` — no allowlist rule is created
+- [ ] The `confirm` response includes `guard_applied: true` and `guard_reason: "elevated_scrutiny"` or `"content_source_mismatch"` (prefer `"elevated_scrutiny"` if both apply) when the guard triggers
+- [ ] The `action_confirm` audit event records `guard_applied: true` and the guard reason when the guard triggers
+- [ ] When `action_gating.guard_allowlist_on_flag` is `false`, the guard is disabled — `always_allow` proceeds subject only to `allowlist_learning`
+- [ ] In CLI mode (one-shot invocation), `_elevated_sessions` and `_mismatch_sessions` are always empty; the guard never fires — this is an accepted limitation of stateless CLI operation
+- [ ] The guard stacks with `allowlist_learning: false`: when both apply, the downgrade-to-approve reason shown is `allowlist_learning_disabled`
 
 ---
 

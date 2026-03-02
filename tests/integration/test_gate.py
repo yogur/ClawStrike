@@ -15,7 +15,7 @@ import pytest
 
 from clawstrike.config import ClawStrikeConfig
 
-from .helpers import get_audit_events, make_cfg_with_static_rules, make_cfg_with_trust
+from ..helpers import get_audit_events, make_cfg_with_static_rules, make_cfg_with_trust
 
 # ---------------------------------------------------------------------------
 # Gate tool basic response shape

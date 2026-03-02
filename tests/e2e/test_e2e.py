@@ -12,7 +12,7 @@ from pathlib import Path
 
 from clawstrike.config import ClawStrikeConfig
 
-from .helpers import get_audit_events
+from ..helpers import get_audit_events
 
 # ---------------------------------------------------------------------------
 # US-032: E2E — Benign Owner DM Passthrough

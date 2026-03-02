@@ -9,7 +9,7 @@ from fastmcp.exceptions import ToolError
 
 from clawstrike.config import ClawStrikeConfig, load_config
 
-from .helpers import minimal_config, write_yaml
+from ..helpers import minimal_config, write_yaml
 
 # ---------------------------------------------------------------------------
 # health tool

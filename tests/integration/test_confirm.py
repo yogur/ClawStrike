@@ -11,7 +11,7 @@ from fastmcp.exceptions import ToolError
 
 from clawstrike.config import ClawStrikeConfig, load_config
 
-from .helpers import get_audit_events, make_cfg_with_trust, minimal_config, write_yaml
+from ..helpers import get_audit_events, make_cfg_with_trust, minimal_config, write_yaml
 
 _CONFIRM_BASE = {
     "action_type": "send_email",

@@ -17,7 +17,7 @@ import pytest
 from clawstrike.classifier import ClassifierResult
 from clawstrike.config import ClawStrikeConfig, load_config
 
-from .helpers import (
+from ..helpers import (
     get_audit_events,
     get_contact_from_db,
     make_cfg_with_contacts,

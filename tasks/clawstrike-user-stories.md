@@ -493,10 +493,10 @@
 **Description:** As a ClawStrike user, I want a flagged session (suspicious but not blocked input) to produce stricter gating recommendations so that borderline attacks face higher scrutiny on downstream actions.
 
 **Acceptance Criteria:**
-- [ ] An inbound message scores between `flag` and `block` thresholds, triggering elevated scrutiny
-- [ ] The `classify` tool returns `decision: "flag"` with `elevated_scrutiny: true`
-- [ ] A subsequent `gate` tool call for a `high`-risk action from a `medium` trust source is affected by the scrutiny downgrade (medium → low), escalating the recommendation from `prompt_user` to `block`
-- [ ] The audit log captures both the flag event and the gating escalation with the effective trust tier noted
+- [x] An inbound message scores between `flag` and `block` thresholds, triggering elevated scrutiny
+- [x] The `classify` tool returns `decision: "flag"` with `elevated_scrutiny: true`
+- [x] A subsequent `gate` tool call for a `high`-risk action from a `medium` trust source is affected by the scrutiny downgrade (medium → low), escalating the recommendation from `prompt_user` to `block`
+- [x] The audit log captures both the flag event and the gating escalation with the effective trust tier noted
 
 ---
 

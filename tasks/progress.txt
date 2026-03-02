@@ -613,3 +613,19 @@
   - Content-source mismatch only fires for HIGH or MEDIUM trust senders (not UNTRUSTED), so `content_source_mismatch` is always False for untrusted first-contact scenarios.
   - Block decisions set `elevated_scrutiny: False` in the audit `details_json` (only flag decisions set it True). Verify this in tests to confirm the audit path is correct.
 ---
+
+## [2026-03-02] - US-034
+- What was implemented:
+  - Added `test_e2e_flagged_session_escalates_gate_recommendation` to `tests/e2e/test_e2e.py`
+  - Tests the full classify → gate pipeline where a borderline-suspicious message from a known medium-trust contact (trusted_group channel) triggers elevated scrutiny
+  - Verifies that the subsequent gate call for a high-risk action escalates from `prompt_user` to `block` due to active downgrade signals
+- Files changed:
+  - `tests/e2e/test_e2e.py` — added US-034 e2e test
+  - `tasks/clawstrike-user-stories.md` — marked US-034 complete
+- **Learnings for future iterations:**
+  - For MEDIUM trust flag decisions, content-source mismatch ALWAYS co-fires with elevated_scrutiny: mismatch condition is `trust_level in (HIGH, MEDIUM) AND score >= base_flag (0.70)`, and for MEDIUM trust, eff_flag == base_flag == 0.70. So any score that triggers a flag decision also triggers mismatch.
+  - When both mismatch and elevated_scrutiny are active, the gate effective trust degrades two tiers: MEDIUM → LOW (mismatch) → UNTRUSTED (elevated_scrutiny). The final recommendation for high+UNTRUSTED is block, satisfying the AC's "prompt_user → block" escalation.
+  - Pre-registering a contact (via `get_or_create_contact` before `init_server`) is required when the scenario requires channel-default trust resolution (non-first-contact). First-contact behavior always overrides to UNTRUSTED.
+  - Gate resolves trust independently from channel_type using `resolve_trust_level` (channel defaults only), never using first-contact logic. This means the base_trust in gate can differ from the classify trust if the contact happened to be first-contact during classify.
+  - The audit `action_gate` event stores `trust_level` as the **effective** (post-downgrade) trust, and `original_trust_level` in `details_json` as the base channel-resolved trust — check both in tests.
+---

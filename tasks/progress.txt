@@ -644,6 +644,15 @@
   - No pre-registration of the contact is needed when the test intentionally exercises first-contact behavior (unlike test_e2e_benign_owner_dm_passthrough which pre-registers to skip first-contact override).
 ---
 
+## [2026-03-04] - Skill refactor: split unified skill into mode-specific variants
+- Replaced `skills/clawstrike/` (unified skill with runtime mode detection) with two self-contained skills:
+  - `skills/clawstrike-mcp/SKILL.md` — for agents with ClawStrike connected as an MCP server; includes inline MCP invocation syntax and JSON examples
+  - `skills/clawstrike-cli/SKILL.md` — for agents invoking ClawStrike as a one-shot shell command; includes inline CLI invocation syntax and bash examples
+- Both skills have `name: clawstrike` in frontmatter; directory names (`clawstrike-mcp/`, `clawstrike-cli/`) disambiguate at the filesystem level
+- Eliminated Step 0 (tool-list mode detection) entirely — no wasted tokens at session start; operator installs the appropriate variant for their deployment
+- Dropped `references/` subdirectories — each SKILL.md is fully self-contained (~190–200 lines, well under 500-line limit)
+- Updated `CLAUDE.md` to reflect the new two-skill structure
+
 ## [2026-03-02] - US-036
 - What was implemented:
   - E2E test `test_e2e_allowlist_reduces_prompt_fatigue` in `tests/e2e/test_e2e.py`

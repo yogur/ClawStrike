@@ -16,8 +16,8 @@ fi
 # /home/node/.openclaw is a host bind-mount (live only at runtime, not build time)
 SKILLS_DIR="/home/node/.openclaw/skills"
 mkdir -p "$SKILLS_DIR"
-cp -r /clawstrike/skills/clawstrike-cli "$SKILLS_DIR/clawstrike"
-echo "[clawstrike] Skill installed at $SKILLS_DIR/clawstrike" >&2
+cp -r /clawstrike/skills/clawstrike-cli "$SKILLS_DIR/"
+echo "[clawstrike] Skill installed at $SKILLS_DIR/clawstrike-cli" >&2
 
 # ── 2b. Configure gateway mode and Control UI allowedOrigins ──────────────────
 # Required when --bind is non-loopback: OpenClaw refuses to start without an

@@ -54,3 +54,6 @@ data/
 
 # PyPI configuration file
 .pypirc
+
+# user-specific clawstrike config
+clawstrike.yaml

@@ -11,9 +11,11 @@ This guide covers installing ClawStrike directly on your host machine alongside 
 ## Step 1 — Install ClawStrike
 
 ```bash
-pip install clawstrike
-# or
-uv add clawstrike
+# uv (recommended)
+uv tool install clawstrike --extra-index-url https://download.pytorch.org/whl/cpu
+
+# pip
+pip install clawstrike --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
 Verify the binary is available:

@@ -8,7 +8,7 @@
 
 ## The Problem
 
-AI agents like [OpenClaw](TODO) now have real system access — shell execution, email, calendars, file systems — and users grant this willingly because autonomy is the whole point. OpenClaw alone has surpassed 200k GitHub stars in weeks, signaling massive demand for agents that act on your behalf. But the security model hasn't kept up.
+AI agents like [OpenClaw](https://github.com/openclaw/openclaw) now have real system access — shell execution, email, calendars, file systems — and users grant this willingly because autonomy is the whole point. OpenClaw alone has surpassed 200k GitHub stars in weeks, signaling massive demand for agents that act on your behalf. But the security model hasn't kept up.
 
 The primary risk isn't the agent itself — it's the **inputs**. Every email body, group chat message, webhook payload, and skill data feed is a potential prompt injection vector. A carefully crafted message from any of these channels can instruct the agent to take actions the user never intended — sending emails, exfiltrating files, modifying system configuration — all while operating within its granted permissions.
 
@@ -105,12 +105,16 @@ The setup script builds the image, downloads the model, runs OpenClaw onboarding
 
 See the [full Docker setup guide](docs/docker-setup.md) for details, volume reference, and troubleshooting.
 
-### Option B: Direct install (pip / uv)
+### Option B: Direct install (uv / pip)
 
 Best if you already have OpenClaw running and want to add ClawStrike alongside it.
 
 ```bash
-pip install clawstrike                         # or: uv add clawstrike
+# uv (recommended)
+uv tool install clawstrike --extra-index-url https://download.pytorch.org/whl/cpu
+
+# pip
+pip install clawstrike --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Install Hugging Face CLI and authenticate
 # See: https://huggingface.co/docs/huggingface_hub/en/guides/cli

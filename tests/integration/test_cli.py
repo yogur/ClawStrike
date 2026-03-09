@@ -100,7 +100,7 @@ def test_start_skill_mode_logs_banner_and_runs(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "skill mode" in result.output.lower()
     assert "stdio" in result.output.lower()
-    mock_run.assert_called_once_with(transport="stdio")
+    mock_run.assert_called_once_with(transport="stdio", show_banner=False)
 
 
 @pytest.mark.parametrize("model", ["multilingual", "english-only"])

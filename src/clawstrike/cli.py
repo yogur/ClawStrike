@@ -25,6 +25,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+
 # Shared type alias for the --config option used across commands.
 _ConfigOption = Annotated[
     Path,
@@ -41,6 +42,52 @@ _ConfigOption = Annotated[
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CONFIG_PATH = Path("clawstrike.yaml")
+
+# oh-my-logo "sunset" palette: #ff9966 → #ff5e62 → #ffa34e
+_SUNSET_STOPS = [(255, 153, 102), (255, 94, 98), (255, 163, 78)]
+
+_BANNER_LINES = [
+    "  ██████╗ ██╗       █████╗  ██╗    ██╗ ███████╗ ████████╗ ██████╗  ██╗ ██╗  ██╗ ███████╗",
+    " ██╔════╝ ██║      ██╔══██╗ ██║    ██║ ██╔════╝ ╚══██╔══╝ ██╔══██╗ ██║ ██║ ██╔╝ ██╔════╝",
+    " ██║      ██║      ███████║ ██║ █╗ ██║ ███████╗    ██║    ██████╔╝ ██║ █████╔╝  █████╗  ",
+    " ██║      ██║      ██╔══██║ ██║███╗██║ ╚════██║    ██║    ██╔══██╗ ██║ ██╔═██╗  ██╔══╝  ",
+    " ╚██████╗ ███████╗ ██║  ██║ ╚███╔███╔╝ ███████║    ██║    ██║  ██║ ██║ ██║  ██╗ ███████╗",
+    "  ╚═════╝ ╚══════╝ ╚═╝  ╚═╝  ╚══╝╚══╝  ╚══════╝    ╚═╝    ╚═╝  ╚═╝ ╚═╝ ╚═╝  ╚═╝ ╚══════╝",
+]
+
+
+def _gradient_color(
+    stops: list[tuple[int, int, int]], t: float
+) -> tuple[int, int, int]:
+    """Interpolate a color from a multi-stop gradient. t is in [0.0, 1.0]."""
+    if t <= 0.0:
+        return stops[0]
+    if t >= 1.0:
+        return stops[-1]
+    segments = len(stops) - 1
+    scaled = t * segments
+    i = int(scaled)
+    local_t = scaled - i
+    r0, g0, b0 = stops[i]
+    r1, g1, b1 = stops[i + 1]
+    return (
+        round(r0 + (r1 - r0) * local_t),
+        round(g0 + (g1 - g0) * local_t),
+        round(b0 + (b1 - b0) * local_t),
+    )
+
+
+def _banner() -> str:
+    """Render the banner with the oh-my-logo sunset horizontal gradient."""
+    width = max(len(line) for line in _BANNER_LINES)
+    rendered = []
+    for line in _BANNER_LINES:
+        chars = []
+        for i, ch in enumerate(line):
+            r, g, b = _gradient_color(_SUNSET_STOPS, i / max(width - 1, 1))
+            chars.append(f"\033[38;2;{r};{g};{b}m{ch}")
+        rendered.append("".join(chars) + "\033[0m")
+    return "\n".join(rendered) + "\n"
 
 
 def _load_cfg_or_defaults(config: Path) -> ClawStrikeConfig:
@@ -70,6 +117,7 @@ def start(
     config: _ConfigOption = _DEFAULT_CONFIG_PATH,
 ) -> None:
     """Start the ClawStrike MCP server (skill mode: stdio transport)."""
+    print(_banner(), file=sys.stderr)
     cfg = _load_cfg_or_defaults(config)
 
     if cfg.mode.value != "skill":
@@ -121,7 +169,7 @@ def start(
     )
 
     # Blocks until the client disconnects (stdio transport).
-    mcp.run(transport="stdio")
+    mcp.run(transport="stdio", show_banner=False)
 
 
 # ---------------------------------------------------------------------------
